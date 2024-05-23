@@ -58,6 +58,7 @@ class TStimCircuit:
         """Append a Stim instruction to the circuit. Instruction must be a
         valid stim.Circuit.append instruction.
         """
+        self._bare_stim_circuit.append('TICK')
         self._bare_stim_circuit.append(*args)
         self._added_instructions.append(self._bare_stim_circuit[-1])
 
@@ -234,7 +235,12 @@ class TStimCircuit:
                 )
             return full_circuit
         else:
-            return self._bare_stim_circuit
+            full_circuit = stim.Circuit()
+            for instr in self._added_instructions:
+                if isinstance(instr, TimePos):
+                    continue
+                full_circuit.append(instr)
+            return full_circuit
         
 def get_XZ_depolarize_ops(num_qubits):
     x_ops = []

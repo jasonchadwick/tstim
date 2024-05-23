@@ -3,6 +3,7 @@ import numpy as np
 import copy
 from dataclasses import dataclass
 import qc_utils.stim
+import itertools
 
 @dataclass
 class TimeDepolarize:
@@ -44,6 +45,7 @@ class TStimCircuit:
         Args:
             circuit: The stim.Circuit object to start from. Defaults to an empty
                 circuit.
+            ancilla_offset: The offset to start numbering ancilla qubits from.
         """
         if circuit_str:
             raise NotImplementedError
@@ -99,7 +101,12 @@ class TStimCircuit:
         """
         self._added_instructions.append(TimePos(time_pos))
 
-    def to_stim(self, include_time_correlations: bool = True, reuse_ancillae: bool = False) -> stim.Circuit:
+    def to_stim(
+            self, 
+            include_time_correlations: bool = True, 
+            reuse_ancillae: bool = False, 
+            ancilla_offset=1000,
+        ) -> stim.Circuit:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
         
@@ -114,7 +121,7 @@ class TStimCircuit:
         """
         if include_time_correlations:
             full_circuit = stim.Circuit()
-            current_ancilla_idx = self._bare_stim_circuit.num_qubits + 1000
+            current_ancilla_idx = self._bare_stim_circuit.num_qubits + ancilla_offset
             last_time_pos = -1
             instructions_to_add = self._added_instructions.copy()
             unfinished_correlated_errors = [[min(instr.target_time_positions), [], np.ones_like(instr.target_qubits, bool), copy.copy(instr)] for instr in self._correlated_errors]
@@ -163,20 +170,45 @@ class TStimCircuit:
                         else:
                             ancillae = error_to_add[1]
                             if len(ancillae) == 0:
-                                needed_ancillae = num_qubits
-                                ancillae = available_ancillae[:num_qubits]
+                                needed_ancillae = 2*num_qubits
+                                ancillae = available_ancillae[:needed_ancillae]
                                 if len(ancillae) < needed_ancillae:
                                     ancillae += [current_ancilla_idx + i for i in range(needed_ancillae - len(ancillae))]
                                     current_ancilla_idx += needed_ancillae - len(ancillae)
                                 error_to_add[1] = ancillae
+
+                                x_ancillae = ancillae[:num_qubits]
+                                z_ancillae = ancillae[num_qubits:]
                                 full_circuit.append('R', ancillae)
+                                full_circuit.append('H', z_ancillae)
                                 
-                                qc_utils.stim.depolarize(full_circuit, ancillae, error_to_add[3].probability)
+                                # apply depolarizing channel
+                                x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits)
+                                independent_prob = error_to_add[3].probability / len(x_paulis)
+                                first_error = True
+                                previous_probs = np.zeros_like(x_paulis, dtype=float)
+                                for i,targets in enumerate(qc_utils.stim.get_stim_targets(ancillae, x+z) for x,z in zip(x_paulis, z_paulis)):
+                                    if i == 0:
+                                        # identity
+                                        continue
+
+                                    if first_error:
+                                        prob = independent_prob
+                                        full_circuit.append('CORRELATED_ERROR', targets, prob)
+                                        first_error = False
+                                        previous_probs[i] = prob
+                                    else:
+                                        prob = float(independent_prob / np.prod(1 - np.array(previous_probs)))
+                                        full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
+                                        previous_probs[i] = prob
+                            else:
+                                x_ancillae = ancillae[:num_qubits]
+                                z_ancillae = ancillae[num_qubits:]
 
                             for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                 if error_to_add[2][err_idx] and time_pos == instr.time_pos:
-                                    full_circuit.append('CX', [target_qubit, ancillae[err_idx]])
-                                    full_circuit.append('CZ', [target_qubit, ancillae[err_idx]])
+                                    full_circuit.append('CX', [target_qubit, z_ancillae[err_idx]])
+                                    full_circuit.append('CZ', [target_qubit, x_ancillae[err_idx]])
                                     error_to_add[2][err_idx] = False
 
                         # remove completed instructions
@@ -202,3 +234,26 @@ class TStimCircuit:
             return full_circuit
         else:
             return self._bare_stim_circuit
+        
+def get_XZ_depolarize_ops(num_qubits):
+    x_ops = []
+    z_ops = []
+    for paulis in itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits):
+        x_op = ''
+        z_op = ''
+        for pauli in paulis:
+            if pauli == 'I':
+                x_op += 'I'
+                z_op += 'I'
+            elif pauli == 'X':
+                x_op += 'X'
+                z_op += 'I'
+            elif pauli == 'Y':
+                x_op += 'X'
+                z_op += 'Z'
+            elif pauli == 'Z':
+                x_op += 'I'
+                z_op += 'Z'
+        x_ops.append(x_op)
+        z_ops.append(z_op)
+    return x_ops, z_ops

@@ -1498,7 +1498,7 @@ sympy = ">=1.12"
 type = "git"
 url = "https://github.com/jasonchadwick/qc_utils.git"
 reference = "HEAD"
-resolved_reference = "7f3538c8892cd5491d358e0994e9e05ae88b63cd"
+resolved_reference = "3ca8dbe5b342bf0342038c98cfc2aa280887f445"
 
 [[package]]
 name = "qiskit"

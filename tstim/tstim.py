@@ -130,7 +130,7 @@ class TStimCircuit:
             available_ancillae = []
             for instr in instructions_to_add:
                 if isinstance(instr, TimePos):
-                    assert instr.time_pos == last_time_pos+1, f'Time positions must be in order, but got {last_time_pos} and {instr.time_pos}.'
+                    assert instr.time_pos > last_time_pos, f'Time positions must be in order, but got {last_time_pos} and {instr.time_pos}.'
                     last_time_pos = instr.time_pos
 
                     # Apply correlated errors that occur at this time

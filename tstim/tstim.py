@@ -180,7 +180,6 @@ class TStimCircuit:
                                 x_ancillae = ancillae[:num_qubits]
                                 z_ancillae = ancillae[num_qubits:]
                                 full_circuit.append('R', ancillae)
-                                full_circuit.append('H', z_ancillae)
                                 
                                 # apply depolarizing channel
                                 x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits)
@@ -207,8 +206,10 @@ class TStimCircuit:
 
                             for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                 if error_to_add[2][err_idx] and time_pos == instr.time_pos:
-                                    full_circuit.append('CX', [target_qubit, z_ancillae[err_idx]])
-                                    full_circuit.append('CZ', [target_qubit, x_ancillae[err_idx]])
+                                    full_circuit.append('CX', [x_ancillae[err_idx], target_qubit])
+                                    full_circuit.append('CZ', [z_ancillae[err_idx], target_qubit])
+                                    # full_circuit.append('CX', [target_qubit, z_ancillae[err_idx]])
+                                    # full_circuit.append('CZ', [target_qubit, x_ancillae[err_idx]])
                                     error_to_add[2][err_idx] = False
 
                         # remove completed instructions
@@ -250,10 +251,10 @@ def get_XZ_depolarize_ops(num_qubits):
                 z_op += 'I'
             elif pauli == 'Y':
                 x_op += 'X'
-                z_op += 'Z'
+                z_op += 'X'
             elif pauli == 'Z':
                 x_op += 'I'
-                z_op += 'Z'
+                z_op += 'X'
         x_ops.append(x_op)
         z_ops.append(z_op)
     return x_ops, z_ops

@@ -24,6 +24,7 @@ Then, the TStimCircuit can generate a standard Stim circuit by adding ancillae:
 
 stim.Circuit('''
     R 1002
+    X_ERROR(0.01) 1002
     CX 1002 0
     H 0 1
     CY 1002 1

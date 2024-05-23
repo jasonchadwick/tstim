@@ -140,13 +140,17 @@ class TStimCircuit:
                         if isinstance(error_to_add[3], TimeCorrelatedError):
                             ancillae = error_to_add[1]
                             if len(ancillae) == 0:
+                                # first time seeing this instruction
                                 if available_ancillae:
                                     ancilla = available_ancillae.pop()
                                 else:
                                     ancilla = current_ancilla_idx
                                     current_ancilla_idx += 1
                                 error_to_add[1] = [ancilla]
+
                                 full_circuit.append('R', ancilla)
+
+                                full_circuit.append('X_ERROR', ancilla, error_to_add[3].probability)
                             else:
                                 assert len(ancillae) == 1
                                 ancilla = ancillae[0]

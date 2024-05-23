@@ -144,9 +144,8 @@ class TStimCircuit:
                             break
 
                         num_qubits = len(error_to_add[3].target_qubits)
-
+                        ancillae = error_to_add[1]
                         if isinstance(error_to_add[3], TimeCorrelatedError):
-                            ancillae = error_to_add[1]
                             if len(ancillae) == 0:
                                 # first time seeing this instruction
                                 if available_ancillae:
@@ -169,7 +168,6 @@ class TStimCircuit:
                                         full_circuit.append('C'+pauli, [ancilla, target_qubit])
                                     error_to_add[2][err_idx] = False
                         else:
-                            ancillae = error_to_add[1]
                             if len(ancillae) == 0:
                                 needed_ancillae = 2*num_qubits
                                 ancillae = available_ancillae[:needed_ancillae]
@@ -216,7 +214,7 @@ class TStimCircuit:
                         # remove completed instructions
                         if np.all(~error_to_add[2]):
                             if reuse_ancillae:
-                                available_ancillae.append(ancilla)
+                                available_ancillae.extend(ancillae)
                             inst_indices_to_remove.append(inst_idx)
                     for inst_idx in reversed(inst_indices_to_remove):
                         unfinished_correlated_errors.pop(inst_idx)

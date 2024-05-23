@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "tstim"
+version = "0.1.0"
+description = "Support for time-correlated errors in stim"
+authors = ["Jason Chadwick <jchadwick100@gmail.com>"]
+license = "GPLv3"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+numpy = "^1.26.4"
+scipy = "^1.13.1"
+stim = "^1.13.0"
+ipykernel = "^6.29.4"
+qc-utils = {git = "https://github.com/jasonchadwick/qc_utils.git"}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

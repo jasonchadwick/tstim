@@ -105,8 +105,8 @@ class TStimCircuit:
     def to_stim(
             self, 
             include_time_correlations: bool = True, 
-            reuse_ancillae: bool = False, 
-            ancilla_offset=1000,
+            reuse_ancillae: bool = True, 
+            ancilla_offset=0,
         ) -> stim.Circuit:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
@@ -115,7 +115,9 @@ class TStimCircuit:
             include_time_correlations: Whether to include time-correlated
                 errors.
             reuse_ancillae: Whether to reuse ancillae that are done with their
-                correlated error. (Not sure yet whether this is ok to do...)
+                correlated error.
+            ancilla_offset: The offset to start numbering ancilla qubits from.
+                Useful when combining circuits, or for easier reading.
         
         Returns:
             A stim.Circuit object representing the circuit.
@@ -184,7 +186,8 @@ class TStimCircuit:
                                 x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits)
                                 independent_prob = error_to_add[3].probability / len(x_paulis)
                                 first_error = True
-                                previous_probs = np.zeros_like(x_paulis, dtype=float)
+                                previous_prob = 1
+                                previous_prob_prod = 1
                                 for i,targets in enumerate(qc_utils.stim.get_stim_targets(ancillae, x+z) for x,z in zip(x_paulis, z_paulis)):
                                     if i == 0:
                                         # identity
@@ -194,11 +197,12 @@ class TStimCircuit:
                                         prob = independent_prob
                                         full_circuit.append('CORRELATED_ERROR', targets, prob)
                                         first_error = False
-                                        previous_probs[i] = prob
+                                        previous_prob = prob
                                     else:
-                                        prob = float(independent_prob / np.prod(1 - np.array(previous_probs)))
+                                        previous_prob_prod *= (1-previous_prob)
+                                        prob = float(independent_prob / previous_prob_prod)
                                         full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
-                                        previous_probs[i] = prob
+                                        previous_prob = prob
                             else:
                                 x_ancillae = ancillae[:num_qubits]
                                 z_ancillae = ancillae[num_qubits:]

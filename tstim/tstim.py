@@ -107,6 +107,7 @@ class TStimCircuit:
             include_time_correlations: bool = True, 
             reuse_ancillae: bool = True, 
             ancilla_offset=0,
+            num_error_strings_to_keep: int = 1000,
         ) -> stim.Circuit:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
@@ -184,25 +185,36 @@ class TStimCircuit:
                                 
                                 # apply depolarizing channel
                                 x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits)
-                                independent_prob = error_to_add[3].probability / len(x_paulis)
+                                z_paulis_x = [pauli.replace('Z', 'X') for pauli in z_paulis]
+
+
+                                num_err_strings = len(x_paulis)
+                                prob_no_err = 1 - error_to_add[3].probability * (num_err_strings-1) / num_err_strings
+                                # TODO: Justifiable way of setting this (based
+                                # on probability and num_err_strings). Maybe use
+                                # some sort of 'collision probability'?
+                                num_strings_to_apply = min(num_err_strings-1, num_error_strings_to_keep)
+
+                                # randomly choose from all except identity
+                                chosen_indices = np.random.choice(num_err_strings-1, num_strings_to_apply, replace=False)+1
+                                independent_prob = (1 - prob_no_err) / num_strings_to_apply
                                 first_error = True
                                 previous_prob = 1
                                 previous_prob_prod = 1
-                                for i,targets in enumerate(qc_utils.stim.get_stim_targets(ancillae, x+z) for x,z in zip(x_paulis, z_paulis)):
-                                    if i == 0:
-                                        # identity
-                                        continue
 
-                                    if first_error:
-                                        prob = independent_prob
-                                        full_circuit.append('CORRELATED_ERROR', targets, prob)
-                                        first_error = False
-                                        previous_prob = prob
-                                    else:
-                                        previous_prob_prod *= (1-previous_prob)
-                                        prob = float(independent_prob / previous_prob_prod)
-                                        full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
-                                        previous_prob = prob
+                                for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis_x)):
+                                    if i in chosen_indices:
+                                        targets = qc_utils.stim.get_stim_targets(ancillae, xp+zp)
+                                        if first_error:
+                                            prob = independent_prob
+                                            full_circuit.append('CORRELATED_ERROR', targets, prob)
+                                            first_error = False
+                                            previous_prob = prob
+                                        else:
+                                            previous_prob_prod *= (1-previous_prob)
+                                            prob = float(independent_prob / previous_prob_prod)
+                                            full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
+                                            previous_prob = prob
                             else:
                                 x_ancillae = ancillae[:num_qubits]
                                 z_ancillae = ancillae[num_qubits:]
@@ -211,8 +223,6 @@ class TStimCircuit:
                                 if error_to_add[2][err_idx] and time_pos == instr.time_pos:
                                     full_circuit.append('CX', [x_ancillae[err_idx], target_qubit])
                                     full_circuit.append('CZ', [z_ancillae[err_idx], target_qubit])
-                                    # full_circuit.append('CX', [target_qubit, z_ancillae[err_idx]])
-                                    # full_circuit.append('CZ', [target_qubit, x_ancillae[err_idx]])
                                     error_to_add[2][err_idx] = False
 
                         # remove completed instructions
@@ -225,16 +235,8 @@ class TStimCircuit:
                 else:
                     full_circuit.append(instr)
 
-            if unfinished_correlated_errors:
-                print(unfinished_correlated_errors)
-                print(full_circuit)
-                print(last_time_pos)
-                raise ValueError("""
-                    Not all correlated errors were resolved. This means that
-                    there was TIME_CORRELATED_ERROR instruction that referred to
-                    a time position that was never specified.
-                    """
-                )
+            assert len(unfinished_correlated_errors) == 0, 'Not all correlated errors were resolved. This means that there are correlated errors that refer to nonexistent TIME_POS indices.'
+
             return full_circuit
         else:
             full_circuit = stim.Circuit()
@@ -245,6 +247,23 @@ class TStimCircuit:
             return full_circuit
         
 def get_XZ_depolarize_ops(num_qubits):
+    """Construct all n-qubit depolarizing operations, then decompose each into
+    an X and Z component.
+    
+    Note: actually only returns Pauli strings consisting of I and X (the "Z
+    strings" have their Zs replaced by Xs).
+    
+    Args:
+        num_qubits: Number of qubits to apply the depolarizing channel to.
+    
+    Returns:
+        x_ops: List of Pauli strings representing the X component of the
+            depolarizing channel. Each string is of length num_qubits consisting
+            of I and X.
+        z_ops: List of Pauli strings representing the Z component of the
+            depolarizing channel. Each string is of length num_qubits consisting
+            of I and Z.
+    """
     x_ops = []
     z_ops = []
     for paulis in itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits):
@@ -259,10 +278,10 @@ def get_XZ_depolarize_ops(num_qubits):
                 z_op += 'I'
             elif pauli == 'Y':
                 x_op += 'X'
-                z_op += 'X'
+                z_op += 'Z'
             elif pauli == 'Z':
                 x_op += 'I'
-                z_op += 'X'
+                z_op += 'Z'
         x_ops.append(x_op)
         z_ops.append(z_op)
     return x_ops, z_ops

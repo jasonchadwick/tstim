@@ -7,8 +7,7 @@ import itertools
 
 @dataclass
 class TimeDepolarize:
-    """Probability is *total* (includes the identity gate). Note that this is
-    different from Stim's convention.
+    """Probability does not include the identity gate (same convention as Stim).
     """
     target_qubits: list[int]
     target_time_positions: list[int]
@@ -90,9 +89,12 @@ class TStimCircuit:
         Args:
             target_qubits: The qubits to apply the error to.
             target_time_positions: The time positions at which the error occurs.
-            probability: The probability of the error occurring.
+            probability: The probability of the error occurring. This
+                probability INCLUDES the identity gate.
         """
-        self._correlated_errors.append(TimeDepolarize(target_qubits, target_time_positions, probability))
+        num_err_strings = 4**len(target_qubits)
+        no_identity_prob = probability * (num_err_strings - 1) / num_err_strings
+        self._correlated_errors.append(TimeDepolarize(target_qubits, target_time_positions, no_identity_prob))
 
     def append_time_pos(self, time_pos: int):
         """Append a TIME_POS instruction to the circuit.
@@ -182,39 +184,33 @@ class TStimCircuit:
                                 x_ancillae = ancillae[:num_qubits]
                                 z_ancillae = ancillae[num_qubits:]
                                 full_circuit.append('R', ancillae)
-                                
+
                                 # apply depolarizing channel
-                                x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits)
-                                z_paulis_x = [pauli.replace('Z', 'X') for pauli in z_paulis]
-
-
-                                num_err_strings = len(x_paulis)
-                                prob_no_err = 1 - error_to_add[3].probability * (num_err_strings-1) / num_err_strings
-                                # TODO: Justifiable way of setting this (based
-                                # on probability and num_err_strings). Maybe use
+                                # TODO: Justifiable way of setting
+                                # num_error_strings_to_keep (based on
+                                # probability and num_err_strings). Maybe use
                                 # some sort of 'collision probability'?
-                                num_strings_to_apply = min(num_err_strings-1, num_error_strings_to_keep)
+                                x_paulis, z_paulis_x = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, all_x=True, include_identity=False)
 
-                                # randomly choose from all except identity
-                                chosen_indices = np.random.choice(num_err_strings-1, num_strings_to_apply, replace=False)+1
-                                independent_prob = (1 - prob_no_err) / num_strings_to_apply
+                                num_err_strings = len(x_paulis)                                
+
+                                independent_prob = error_to_add[3].probability / num_err_strings
                                 first_error = True
                                 previous_prob = 1
                                 previous_prob_prod = 1
 
                                 for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis_x)):
-                                    if i in chosen_indices:
-                                        targets = qc_utils.stim.get_stim_targets(ancillae, xp+zp)
-                                        if first_error:
-                                            prob = independent_prob
-                                            full_circuit.append('CORRELATED_ERROR', targets, prob)
-                                            first_error = False
-                                            previous_prob = prob
-                                        else:
-                                            previous_prob_prod *= (1-previous_prob)
-                                            prob = float(independent_prob / previous_prob_prod)
-                                            full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
-                                            previous_prob = prob
+                                    targets = qc_utils.stim.get_stim_targets(ancillae, xp+zp)
+                                    if first_error:
+                                        prob = independent_prob
+                                        full_circuit.append('CORRELATED_ERROR', targets, prob)
+                                        first_error = False
+                                        previous_prob = prob
+                                    else:
+                                        previous_prob_prod *= (1-previous_prob)
+                                        prob = float(independent_prob / previous_prob_prod)
+                                        full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
+                                        previous_prob = prob
                             else:
                                 x_ancillae = ancillae[:num_qubits]
                                 z_ancillae = ancillae[num_qubits:]
@@ -246,7 +242,13 @@ class TStimCircuit:
                 full_circuit.append(instr)
             return full_circuit
         
-def get_XZ_depolarize_ops(num_qubits):
+def get_XZ_depolarize_ops(
+        num_qubits: int, 
+        max_error_strings: int = 4**10, 
+        all_x: bool = False,
+        include_identity: bool = True,
+        rng: np.random.Generator | int | None = None,
+    ):
     """Construct all n-qubit depolarizing operations, then decompose each into
     an X and Z component.
     
@@ -255,6 +257,11 @@ def get_XZ_depolarize_ops(num_qubits):
     
     Args:
         num_qubits: Number of qubits to apply the depolarizing channel to.
+        max_error_strings: Maximum number of error strings to generate.
+        all_x: Whether to replace Zs with Xs in strings.
+        include_identity: Whether to include the identity string.
+        rng: Random number generator (or integer seed) to use. If None, uses
+            np.random.default_rng().
     
     Returns:
         x_ops: List of Pauli strings representing the X component of the
@@ -264,24 +271,76 @@ def get_XZ_depolarize_ops(num_qubits):
             depolarizing channel. Each string is of length num_qubits consisting
             of I and Z.
     """
-    x_ops = []
-    z_ops = []
-    for paulis in itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits):
-        x_op = ''
-        z_op = ''
-        for pauli in paulis:
-            if pauli == 'I':
-                x_op += 'I'
-                z_op += 'I'
-            elif pauli == 'X':
-                x_op += 'X'
-                z_op += 'I'
-            elif pauli == 'Y':
-                x_op += 'X'
-                z_op += 'Z'
-            elif pauli == 'Z':
-                x_op += 'I'
-                z_op += 'Z'
-        x_ops.append(x_op)
-        z_ops.append(z_op)
-    return x_ops, z_ops
+    if isinstance(rng, int):
+        rng = np.random.default_rng(rng)
+    elif rng is None:
+        rng = np.random.default_rng()
+
+    if max_error_strings < 4**num_qubits:
+        # Generate random Pauli strings (excluding the identity string)
+        if include_identity:
+            chosen_indices = rng.choice(4**num_qubits, max_error_strings, replace=False)
+        else:
+            chosen_indices = rng.choice(4**num_qubits-1, max_error_strings, replace=False)+1
+        x_ops = []
+        z_ops = []
+        for i in chosen_indices:
+            # Convert i to a Pauli string
+            quaternary_str = np.base_repr(i, base=4).rjust(num_qubits, '0')
+            x_op = ''
+            z_op = ''
+            for digit in quaternary_str:
+                if digit == '0':
+                    x_op += 'I'
+                    z_op += 'I'
+                elif digit == '1':
+                    x_op += 'X'
+                    z_op += 'I'
+                elif digit == '2':
+                    x_op += 'X'
+                    if all_x:
+                        z_op += 'X'
+                    else:
+                        z_op += 'Z'
+                elif digit == '3':
+                    x_op += 'I'
+                    if all_x:
+                        z_op += 'X'
+                    else:
+                        z_op += 'Z'
+            x_ops.append(x_op)
+            z_ops.append(z_op)
+        return x_ops, z_ops
+    else:
+        # Generate all possible Pauli strings
+        x_ops = []
+        z_ops = []
+        for paulis in itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits):
+            x_op = ''
+            z_op = ''
+            for pauli in paulis:
+                if pauli == 'I':
+                    x_op += 'I'
+                    z_op += 'I'
+                elif pauli == 'X':
+                    x_op += 'X'
+                    z_op += 'I'
+                elif pauli == 'Y':
+                    x_op += 'X'
+                    if all_x:
+                        z_op += 'X'
+                    else:
+                        z_op += 'Z'
+                elif pauli == 'Z':
+                    x_op += 'I'
+                    if all_x:
+                        z_op += 'X'
+                    else:
+                        z_op += 'Z'
+            x_ops.append(x_op)
+            z_ops.append(z_op)
+
+        if not include_identity:
+            x_ops.pop(0)
+            z_ops.pop(0)
+        return x_ops, z_ops

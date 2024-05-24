@@ -4,6 +4,8 @@ import copy
 from dataclasses import dataclass
 import qc_utils.stim
 import itertools
+import scipy.stats
+import math
 
 @dataclass
 class TimeDepolarize:
@@ -109,7 +111,8 @@ class TStimCircuit:
             include_time_correlations: bool = True, 
             reuse_ancillae: bool = True, 
             ancilla_offset=0,
-            num_error_strings_to_keep: int = 1000,
+            num_times_to_be_sampled: int = 10**8,
+            reduction_eps: float = 0,
         ) -> stim.Circuit:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
@@ -185,11 +188,20 @@ class TStimCircuit:
                                 z_ancillae = ancillae[num_qubits:]
                                 full_circuit.append('R', ancillae)
 
-                                # apply depolarizing channel
-                                # TODO: Justifiable way of setting
-                                # num_error_strings_to_keep (based on
-                                # probability and num_err_strings). Maybe use
-                                # some sort of 'collision probability'?
+                                # Determine number of error terms to keep. We
+                                # first calculate the (1-reduction_eps)
+                                # percentile value of the number of times we
+                                # will sample any non-identity error string. For
+                                # this value, we then find the number of error
+                                # strings that we need to keep to ensure that
+                                # the probability of any two error strings
+                                # being sampled is less than 0.5.
+                                largest_num_samples = int(scipy.stats.binom.ppf(1 - reduction_eps, num_times_to_be_sampled, error_to_add[3].probability))
+                                if largest_num_samples <= 1:
+                                    num_error_strings_to_keep = largest_num_samples
+                                else:
+                                    num_error_strings_to_keep = min(4**num_qubits-1, math.ceil(-1/((1-0.5)**(1/math.comb(largest_num_samples, 2)) - 1)))
+
                                 x_paulis, z_paulis_x = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, all_x=True, include_identity=False)
 
                                 num_err_strings = len(x_paulis)                                
@@ -276,14 +288,15 @@ def get_XZ_depolarize_ops(
     elif rng is None:
         rng = np.random.default_rng()
 
-    if max_error_strings < 4**num_qubits:
+    x_ops = []
+    z_ops = []
+    if (include_identity and max_error_strings < 4**num_qubits) or (not include_identity and max_error_strings < 4**num_qubits-1):
         # Generate random Pauli strings (excluding the identity string)
         if include_identity:
             chosen_indices = rng.choice(4**num_qubits, max_error_strings, replace=False)
         else:
             chosen_indices = rng.choice(4**num_qubits-1, max_error_strings, replace=False)+1
-        x_ops = []
-        z_ops = []
+
         for i in chosen_indices:
             # Convert i to a Pauli string
             quaternary_str = np.base_repr(i, base=4).rjust(num_qubits, '0')
@@ -310,11 +323,8 @@ def get_XZ_depolarize_ops(
                         z_op += 'Z'
             x_ops.append(x_op)
             z_ops.append(z_op)
-        return x_ops, z_ops
     else:
         # Generate all possible Pauli strings
-        x_ops = []
-        z_ops = []
         for paulis in itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits):
             x_op = ''
             z_op = ''
@@ -343,4 +353,8 @@ def get_XZ_depolarize_ops(
         if not include_identity:
             x_ops.pop(0)
             z_ops.pop(0)
-        return x_ops, z_ops
+
+    assert len(x_ops) == len(z_ops)
+    assert len(x_ops) == min(max_error_strings, 4**num_qubits-1 if not include_identity else 4**num_qubits)
+
+    return x_ops, z_ops

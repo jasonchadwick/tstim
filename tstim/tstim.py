@@ -133,7 +133,7 @@ class TStimCircuit:
             current_ancilla_idx = self._bare_stim_circuit.num_qubits + ancilla_offset
             last_time_pos = -1
             instructions_to_add = self._added_instructions.copy()
-            unfinished_correlated_errors = [[min(instr.target_time_positions), [], np.ones_like(instr.target_qubits, bool), copy.copy(instr)] for instr in self._correlated_errors]
+            unfinished_correlated_errors = [[min(instr.target_time_positions), [[], [], [], []], np.ones_like(instr.target_qubits, bool), copy.copy(instr)] for instr in self._correlated_errors]
             unfinished_correlated_errors.sort(key=lambda x: x[0])
 
             available_ancillae = []
@@ -152,8 +152,9 @@ class TStimCircuit:
                             break
 
                         num_qubits = len(error_to_add[3].target_qubits)
-                        ancillae = error_to_add[1]
+                        
                         if isinstance(error_to_add[3], TimeCorrelatedError):
+                            ancillae = error_to_add[1][0]
                             if len(ancillae) == 0:
                                 # first time seeing this instruction
                                 if available_ancillae:
@@ -161,7 +162,7 @@ class TStimCircuit:
                                 else:
                                     ancilla = current_ancilla_idx
                                     current_ancilla_idx += 1
-                                error_to_add[1] = [ancilla]
+                                error_to_add[1][0] = [ancilla]
 
                                 full_circuit.append('R', ancilla)
 
@@ -178,6 +179,7 @@ class TStimCircuit:
                         else:
                             assert isinstance(error_to_add[3], TimeDepolarize)
                             skip_op = False
+                            ancillae = error_to_add[1][0] + error_to_add[1][1]
                             if len(ancillae) == 0:
                                 # This is the first time seeing this
                                 # instruction, so we need to create ancillae and
@@ -192,59 +194,93 @@ class TStimCircuit:
                                 # the probability of any two error strings
                                 # being sampled is less than 0.5.
                                 largest_num_samples = int(scipy.stats.binom.ppf(1 - reduction_eps, num_times_to_be_sampled, error_to_add[3].probability))
-                                if largest_num_samples > 0:
-                                    if largest_num_samples == 1:
-                                        num_error_strings_to_keep = 1
-                                    else:
-                                        num_error_strings_to_keep = min(4**num_qubits-1, math.ceil(-1/((1-0.5)**(1/math.comb(largest_num_samples, 2)) - 1)))
+                                if largest_num_samples <= 1:
+                                    num_error_strings_to_keep = largest_num_samples
+                                else:
+                                    num_error_strings_to_keep = min(4**num_qubits-1, math.ceil(-1/((1-0.5)**(1/math.comb(largest_num_samples, 2)) - 1)))
+                                if num_error_strings_to_keep > 0:
+                                    x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
+                                    num_err_strings = len(x_paulis)
 
-                                    needed_ancillae = 2*num_qubits
+                                    x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
+                                    z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
+
+                                    needed_x_ancillae = x_affected_indices.shape[0]
+                                    needed_z_ancillae = z_affected_indices.shape[0]
+
+                                    needed_ancillae = needed_x_ancillae + needed_z_ancillae
                                     ancillae = available_ancillae[:needed_ancillae]
                                     available_ancillae = available_ancillae[needed_ancillae:]
                                     if len(ancillae) < needed_ancillae:
                                         num_to_add = needed_ancillae - len(ancillae)
                                         ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
                                         current_ancilla_idx += num_to_add
-                                    error_to_add[1] = ancillae
 
-                                    x_ancillae = ancillae[:num_qubits]
-                                    z_ancillae = ancillae[num_qubits:]
+                                    x_ancillae = ancillae[:needed_x_ancillae]
+                                    z_ancillae = ancillae[needed_x_ancillae:]
+
+                                    error_to_add[1][0] = x_ancillae
+                                    error_to_add[1][1] = z_ancillae
+                                    error_to_add[1][2] = x_affected_indices
+                                    error_to_add[1][3] = z_affected_indices
+
                                     full_circuit.append('R', ancillae)
-
-                                    x_paulis, z_paulis_x = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, all_x=True, include_identity=False)
-
-                                    num_err_strings = len(x_paulis)                                
 
                                     independent_prob = error_to_add[3].probability / num_err_strings
                                     first_error = True
                                     previous_prob = 1
                                     previous_prob_prod = 1
 
-                                    for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis_x)):
-                                        targets = qc_utils.stim.get_stim_targets(ancillae, xp+zp)
+                                    ancilla_used = np.zeros(needed_ancillae, dtype=bool)
+
+                                    for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
+                                        x_targets = []
+                                        z_targets = []
+                                        x_idx = 0
+                                        z_idx = 0
+                                        for j in range(num_qubits):
+                                            if j in x_affected_indices:
+                                                if xp[j]:
+                                                    x_targets.append(stim.target_x(x_ancillae[x_idx]))
+                                                    ancilla_used[x_idx] = True
+                                                x_idx += 1
+                                            if j in z_affected_indices:
+                                                if zp[j]:
+                                                    z_targets.append(stim.target_x(z_ancillae[z_idx]))
+                                                    ancilla_used[needed_x_ancillae + z_idx] = True
+                                                z_idx += 1
+
                                         if first_error:
                                             prob = independent_prob
-                                            full_circuit.append('CORRELATED_ERROR', targets, prob)
+                                            full_circuit.append('CORRELATED_ERROR', x_targets + z_targets, prob)
                                             first_error = False
                                             previous_prob = prob
                                         else:
                                             previous_prob_prod *= (1-previous_prob)
                                             prob = float(independent_prob / previous_prob_prod)
-                                            full_circuit.append('ELSE_CORRELATED_ERROR', targets, prob)
+                                            full_circuit.append('ELSE_CORRELATED_ERROR', x_targets + z_targets, prob)
                                             previous_prob = prob
+
+                                    assert np.all(ancilla_used)
                                 else:
                                     # we don't need to keep any error strings
                                     error_to_add[2][:] = False
                                     skip_op = True
                             else:
-                                x_ancillae = ancillae[:num_qubits]
-                                z_ancillae = ancillae[num_qubits:]
+                                x_ancillae = error_to_add[1][0]
+                                z_ancillae = error_to_add[1][1]
+                                x_affected_indices = error_to_add[1][2]
+                                z_affected_indices = error_to_add[1][3]
 
                             if not skip_op:
                                 for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                     if error_to_add[2][err_idx] and time_pos == instr.time_pos:
-                                        full_circuit.append('CX', [x_ancillae[err_idx], target_qubit])
-                                        full_circuit.append('CZ', [z_ancillae[err_idx], target_qubit])
+                                        if err_idx in x_affected_indices:
+                                            ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
+                                            full_circuit.append('CX', [x_ancillae[ancilla_idx], target_qubit])
+                                        if err_idx in z_affected_indices:
+                                            ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
+                                            full_circuit.append('CZ', [z_ancillae[ancilla_idx], target_qubit])
                                         error_to_add[2][err_idx] = False
 
                         # remove completed instructions
@@ -268,28 +304,26 @@ class TStimCircuit:
                     continue
                 full_circuit.append(instr)
             return full_circuit
-        
+
 def get_XZ_depolarize_ops(
         num_qubits: int, 
         max_error_strings: int = 4**10, 
-        all_x: bool = False,
         include_identity: bool = True,
         rng: np.random.Generator | int | None = None,
     ):
     """Construct all n-qubit depolarizing operations, then decompose each into
     an X and Z component.
-    
+
     Note: actually only returns Pauli strings consisting of I and X (the "Z
     strings" have their Zs replaced by Xs).
-    
+
     Args:
         num_qubits: Number of qubits to apply the depolarizing channel to.
         max_error_strings: Maximum number of error strings to generate.
-        all_x: Whether to replace Zs with Xs in strings.
         include_identity: Whether to include the identity string.
         rng: Random number generator (or integer seed) to use. If None, uses
             np.random.default_rng().
-    
+
     Returns:
         x_ops: List of Pauli strings representing the X component of the
             depolarizing channel. Each string is of length num_qubits consisting
@@ -303,71 +337,46 @@ def get_XZ_depolarize_ops(
     elif rng is None:
         rng = np.random.default_rng()
 
-    x_ops = []
-    z_ops = []
     if (include_identity and max_error_strings < 4**num_qubits) or (not include_identity and max_error_strings < 4**num_qubits-1):
+        x_ops = np.zeros((max_error_strings, num_qubits), dtype=bool)
+        z_ops = np.zeros((max_error_strings, num_qubits), dtype=bool)
+
         # Generate random Pauli strings (excluding the identity string)
         if include_identity:
             chosen_indices = rng.choice(4**num_qubits, max_error_strings, replace=False)
         else:
             chosen_indices = rng.choice(4**num_qubits-1, max_error_strings, replace=False)+1
 
-        for i in chosen_indices:
+        for i,idx in enumerate(chosen_indices):
             # Convert i to a Pauli string
-            quaternary_str = np.base_repr(i, base=4).rjust(num_qubits, '0')
-            x_op = ''
-            z_op = ''
-            for digit in quaternary_str:
-                if digit == '0':
-                    x_op += 'I'
-                    z_op += 'I'
-                elif digit == '1':
-                    x_op += 'X'
-                    z_op += 'I'
+            quaternary_str = np.base_repr(idx, base=4).rjust(num_qubits, '0')
+
+            for j,digit in enumerate(quaternary_str):
+                if digit == '1':
+                    x_ops[i, j] = True
                 elif digit == '2':
-                    x_op += 'X'
-                    if all_x:
-                        z_op += 'X'
-                    else:
-                        z_op += 'Z'
+                    x_ops[i, j] = True
+                    z_ops[i, j] = True
                 elif digit == '3':
-                    x_op += 'I'
-                    if all_x:
-                        z_op += 'X'
-                    else:
-                        z_op += 'Z'
-            x_ops.append(x_op)
-            z_ops.append(z_op)
+                    z_ops[i, j] = True
     else:
         # Generate all possible Pauli strings
-        for paulis in itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits):
-            x_op = ''
-            z_op = ''
-            for pauli in paulis:
-                if pauli == 'I':
-                    x_op += 'I'
-                    z_op += 'I'
-                elif pauli == 'X':
-                    x_op += 'X'
-                    z_op += 'I'
+
+        x_ops = np.zeros((4**num_qubits, num_qubits), dtype=bool)
+        z_ops = np.zeros((4**num_qubits, num_qubits), dtype=bool)
+        for i,paulis in enumerate(itertools.product(['I', 'X', 'Y', 'Z'], repeat=num_qubits)):
+            for j,pauli in enumerate(paulis):
+                if pauli == 'X':
+                    x_ops[i, j] = True
                 elif pauli == 'Y':
-                    x_op += 'X'
-                    if all_x:
-                        z_op += 'X'
-                    else:
-                        z_op += 'Z'
+                    x_ops[i, j] = True
+                    z_ops[i, j] = True
                 elif pauli == 'Z':
-                    x_op += 'I'
-                    if all_x:
-                        z_op += 'X'
-                    else:
-                        z_op += 'Z'
-            x_ops.append(x_op)
-            z_ops.append(z_op)
+                    z_ops[i, j] = True
 
         if not include_identity:
-            x_ops.pop(0)
-            z_ops.pop(0)
+            x_ops = x_ops[1:]
+            z_ops = z_ops[1:]
 
     assert len(x_ops) == len(z_ops)
     assert len(x_ops) == min(max_error_strings, 4**num_qubits-1 if not include_identity else 4**num_qubits)

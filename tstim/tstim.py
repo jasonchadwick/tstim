@@ -14,6 +14,7 @@ class TimeDepolarize:
     target_qubits: list[int]
     target_time_positions: list[int]
     probability: float
+    annotation: str
 
 @dataclass
 class TimeCorrelatedError:
@@ -22,6 +23,7 @@ class TimeCorrelatedError:
     target_qubits: list[int]
     target_time_positions: list[int]
     probability: float
+    annotation: str
 
 @dataclass 
 class TimePos:
@@ -37,12 +39,12 @@ class InstructionToAdd:
 
 class TStimCircuit:
     """TODO
-    
+
     TODO: re-use ancilla qubits that are done with their correlated error.
     """
     def __init__(self, circuit_str: str = ""):
         """Initialize a TStimCircuit object.
-        
+
         Args:
             circuit: The stim.Circuit object to start from. Defaults to an empty
                 circuit.
@@ -50,61 +52,65 @@ class TStimCircuit:
         """
         if circuit_str:
             raise NotImplementedError
-        
+
         self._bare_stim_circuit = stim.Circuit()
-        self._added_instructions: list[stim.CircuitInstruction | stim.CircuitRepeatBlock | TimePos] = []
+        self._added_instructions: list[tuple[stim.CircuitInstruction | stim.CircuitRepeatBlock | TimePos, str]] = []
         self._correlated_errors: list[TimeCorrelatedError | TimeDepolarize] = []
 
-    def append(self, *args):
+    def append(self, *args, annotation=''):
         """Append a Stim instruction to the circuit. Instruction must be a
         valid stim.Circuit.append instruction.
         """
         self._bare_stim_circuit.append('TICK')
         self._bare_stim_circuit.append(*args)
-        self._added_instructions.append(self._bare_stim_circuit[-1])
+        self._added_instructions.append((self._bare_stim_circuit[-1], annotation))
 
     def append_time_correlated_error(
             self, 
             pauli_string: str, 
             target_qubits: list[int], 
             target_time_positions: list[int], 
-            probability: float
+            probability: float,
+            annotation: str = '',
         ):
         """Append a TIME_CORRELATED_ERROR instruction to the circuit.
-        
+
         Args:
             pauli_string: The Pauli string to apply.
             target_qubits: The qubits to apply the error to.
             target_time_positions: The time positions at which the error occurs.
             probability: The probability of the error occurring.
+            annotation: An optional annotation for the error.
         """
-        self._correlated_errors.append(TimeCorrelatedError(pauli_string, target_qubits, target_time_positions, probability))
+        self._correlated_errors.append(TimeCorrelatedError(pauli_string, target_qubits, target_time_positions, probability, annotation))
 
     def append_time_depolarize(
             self, 
             target_qubits: list[int], 
             target_time_positions: list[int], 
-            probability: float
+            probability: float,
+            annotation: str = '',
         ):
         """Append a TIME_DEPOLARIZE instruction to the circuit.
-        
+
         Args:
             target_qubits: The qubits to apply the error to.
             target_time_positions: The time positions at which the error occurs.
             probability: The probability of the error occurring. This
                 probability INCLUDES the identity gate.
+            annotation: An optional annotation for the error.
         """
         num_err_strings = 4**len(target_qubits)
         no_identity_prob = probability * (num_err_strings - 1) / num_err_strings
-        self._correlated_errors.append(TimeDepolarize(target_qubits, target_time_positions, no_identity_prob))
+        self._correlated_errors.append(TimeDepolarize(target_qubits, target_time_positions, no_identity_prob, annotation))
 
     def append_time_pos(self, time_pos: int):
         """Append a TIME_POS instruction to the circuit.
-        
+
         Args:
             time_pos: The time position to append.
         """
-        self._added_instructions.append(TimePos(time_pos))
+        self._added_instructions.append((TimePos(time_pos), ''))
 
     def to_stim(
             self, 
@@ -113,10 +119,10 @@ class TStimCircuit:
             ancilla_offset=0,
             num_times_to_be_sampled: int = 10**8,
             reduction_eps: float = 0,
-        ) -> stim.Circuit:
+        ) -> stim.Circuit | tuple[stim.Circuit, dict[int, str]]:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
-        
+
         Args:
             include_time_correlations: Whether to include time-correlated
                 errors.
@@ -124,12 +130,15 @@ class TStimCircuit:
                 correlated error.
             ancilla_offset: The offset to start numbering ancilla qubits from.
                 Useful when combining circuits, or for easier reading.
-        
+
         Returns:
-            A stim.Circuit object representing the circuit.
+            A stim.Circuit object representing the circuit. Also returns a
+            dictionary mapping indices of instructions in the circuit to their
+            annotations, if any annotations are present.
         """
         if include_time_correlations:
             full_circuit = stim.Circuit()
+            annotations = {}
             current_ancilla_idx = self._bare_stim_circuit.num_qubits + ancilla_offset
             last_time_pos = -1
             instructions_to_add = self._added_instructions.copy()
@@ -137,7 +146,7 @@ class TStimCircuit:
             unfinished_correlated_errors.sort(key=lambda x: x[0])
 
             available_ancillae = []
-            for instr in instructions_to_add:
+            for (instr, annotation) in instructions_to_add:
                 if isinstance(instr, TimePos):
                     assert instr.time_pos > last_time_pos, f'Time positions must be in order, but got {last_time_pos} and {instr.time_pos}.'
                     last_time_pos = instr.time_pos
@@ -152,7 +161,7 @@ class TStimCircuit:
                             break
 
                         num_qubits = len(error_to_add[3].target_qubits)
-                        
+
                         if isinstance(error_to_add[3], TimeCorrelatedError):
                             ancillae = error_to_add[1][0]
                             if len(ancillae) == 0:
@@ -198,6 +207,7 @@ class TStimCircuit:
                                     num_error_strings_to_keep = largest_num_samples
                                 else:
                                     num_error_strings_to_keep = min(4**num_qubits-1, math.ceil(-1/((1-0.5)**(1/math.comb(largest_num_samples, 2)) - 1)))
+
                                 if num_error_strings_to_keep > 0:
                                     x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
                                     num_err_strings = len(x_paulis)
@@ -228,7 +238,6 @@ class TStimCircuit:
 
                                     independent_prob = error_to_add[3].probability / num_err_strings
                                     first_error = True
-                                    previous_prob = 1
                                     previous_prob_prod = 1
 
                                     ancilla_used = np.zeros(needed_ancillae, dtype=bool)
@@ -251,15 +260,17 @@ class TStimCircuit:
                                                 z_idx += 1
 
                                         if first_error:
+                                            if len(error_to_add[3].annotation) > 0:
+                                                annotations[len(full_circuit)] = error_to_add[3].annotation
+
                                             prob = independent_prob
                                             full_circuit.append('CORRELATED_ERROR', x_targets + z_targets, prob)
                                             first_error = False
-                                            previous_prob = prob
+                                            previous_prob_prod *= (1-prob)
                                         else:
-                                            previous_prob_prod *= (1-previous_prob)
                                             prob = float(independent_prob / previous_prob_prod)
                                             full_circuit.append('ELSE_CORRELATED_ERROR', x_targets + z_targets, prob)
-                                            previous_prob = prob
+                                            previous_prob_prod *= (1-prob)
 
                                     assert np.all(ancilla_used)
                                 else:
@@ -292,18 +303,29 @@ class TStimCircuit:
                     for inst_idx in reversed(inst_indices_to_remove):
                         unfinished_correlated_errors.pop(inst_idx)
                 else:
+                    if len(annotation) > 0:
+                        annotations[len(full_circuit)] = annotation
                     full_circuit.append(instr)
 
             assert len(unfinished_correlated_errors) == 0, 'Not all correlated errors were resolved. This means that there are correlated errors that refer to nonexistent TIME_POS indices.'
 
-            return full_circuit
+            if len(annotations) > 0:
+                return full_circuit, annotations
+            else:
+                return full_circuit
         else:
             full_circuit = stim.Circuit()
-            for instr in self._added_instructions:
+            annotations = {}
+            for instr, annotation in self._added_instructions:
                 if isinstance(instr, TimePos):
                     continue
+                if len(annotation) > 0:
+                    annotations[len(full_circuit)] = annotation
                 full_circuit.append(instr)
-            return full_circuit
+            if len(annotations) > 0:
+                return full_circuit, annotations
+            else:
+                return full_circuit
 
 def get_XZ_depolarize_ops(
         num_qubits: int, 

@@ -119,6 +119,7 @@ class TStimCircuit:
             ancilla_offset=0,
             num_times_to_be_sampled: int = 10**8,
             reduction_eps: float = 0,
+            separate_depolarize_ancilla_gates: bool = False,
         ) -> stim.Circuit | tuple[stim.Circuit, dict[int, str]]:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
@@ -130,6 +131,8 @@ class TStimCircuit:
                 correlated error.
             ancilla_offset: The offset to start numbering ancilla qubits from.
                 Useful when combining circuits, or for easier reading.
+            separate_depolarize_ancilla_gates: Whether to surround ancilla
+                operations instructions with TICK instructions.
 
         Returns:
             A stim.Circuit object representing the circuit. Also returns a
@@ -284,6 +287,7 @@ class TStimCircuit:
                                 x_affected_indices = error_to_add[1][2]
                                 z_affected_indices = error_to_add[1][3]
 
+
                             if not skip_op:
                                 for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                     if error_to_add[2][err_idx] and time_pos == instr.time_pos:
@@ -291,12 +295,20 @@ class TStimCircuit:
                                             ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
                                             if error_to_add[4][0] in annotations:
                                                 annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
+                                            if separate_depolarize_ancilla_gates and full_circuit[-1].name != 'TICK':
+                                                full_circuit.append('TICK')
                                             full_circuit.append('CX', [x_ancillae[ancilla_idx], target_qubit])
+                                            if separate_depolarize_ancilla_gates:
+                                                full_circuit.append('TICK')
                                         if err_idx in z_affected_indices:
                                             ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
                                             if error_to_add[4][0] in annotations:
                                                 annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
+                                            if separate_depolarize_ancilla_gates and full_circuit[-1].name != 'TICK':
+                                                full_circuit.append('TICK')
                                             full_circuit.append('CZ', [z_ancillae[ancilla_idx], target_qubit])
+                                            if separate_depolarize_ancilla_gates:
+                                                full_circuit.append('TICK')
                                         error_to_add[2][err_idx] = False
 
                         # remove completed instructions

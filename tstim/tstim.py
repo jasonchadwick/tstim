@@ -142,7 +142,7 @@ class TStimCircuit:
             current_ancilla_idx = self._bare_stim_circuit.num_qubits + ancilla_offset
             last_time_pos = -1
             instructions_to_add = self._added_instructions.copy()
-            unfinished_correlated_errors = [[min(instr.target_time_positions), [[], [], [], []], np.ones_like(instr.target_qubits, bool), copy.copy(instr)] for instr in self._correlated_errors]
+            unfinished_correlated_errors = [[min(instr.target_time_positions), [[], [], [], []], np.ones_like(instr.target_qubits, bool), copy.copy(instr), [-1, []]] for instr in self._correlated_errors]
             unfinished_correlated_errors.sort(key=lambda x: x[0])
 
             available_ancillae = []
@@ -234,6 +234,10 @@ class TStimCircuit:
                                     error_to_add[1][2] = x_affected_indices
                                     error_to_add[1][3] = z_affected_indices
 
+                                    reset_layer_idx = len(full_circuit)
+                                    error_to_add[4][0] = reset_layer_idx
+                                    if len(error_to_add[3].annotation) > 0:
+                                        annotations[reset_layer_idx] = error_to_add[3].annotation
                                     full_circuit.append('R', ancillae)
 
                                     independent_prob = error_to_add[3].probability / num_err_strings
@@ -260,9 +264,6 @@ class TStimCircuit:
                                                 z_idx += 1
 
                                         if first_error:
-                                            if len(error_to_add[3].annotation) > 0:
-                                                annotations[len(full_circuit)] = error_to_add[3].annotation
-
                                             prob = independent_prob
                                             full_circuit.append('CORRELATED_ERROR', x_targets + z_targets, prob)
                                             first_error = False
@@ -288,9 +289,13 @@ class TStimCircuit:
                                     if error_to_add[2][err_idx] and time_pos == instr.time_pos:
                                         if err_idx in x_affected_indices:
                                             ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
+                                            if error_to_add[4][0] in annotations:
+                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
                                             full_circuit.append('CX', [x_ancillae[ancilla_idx], target_qubit])
                                         if err_idx in z_affected_indices:
                                             ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
+                                            if error_to_add[4][0] in annotations:
+                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
                                             full_circuit.append('CZ', [z_ancillae[ancilla_idx], target_qubit])
                                         error_to_add[2][err_idx] = False
 

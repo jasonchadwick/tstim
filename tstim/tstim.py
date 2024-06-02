@@ -293,20 +293,28 @@ class TStimCircuit:
                                     if error_to_add[2][err_idx] and time_pos == instr.time_pos:
                                         if err_idx in x_affected_indices:
                                             ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
-                                            if error_to_add[4][0] in annotations:
-                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
+
                                             if separate_depolarize_ancilla_gates and full_circuit[-1].name != 'TICK':
                                                 full_circuit.append('TICK')
+
+                                            if error_to_add[4][0] in annotations:
+                                                # note this cx layer in annotation
+                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
                                             full_circuit.append('CX', [x_ancillae[ancilla_idx], target_qubit])
+
                                             if separate_depolarize_ancilla_gates:
                                                 full_circuit.append('TICK')
                                         if err_idx in z_affected_indices:
                                             ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
-                                            if error_to_add[4][0] in annotations:
-                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
+            
                                             if separate_depolarize_ancilla_gates and full_circuit[-1].name != 'TICK':
                                                 full_circuit.append('TICK')
+
+                                            if error_to_add[4][0] in annotations:
+                                                # note this cz layer in annotation
+                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
                                             full_circuit.append('CZ', [z_ancillae[ancilla_idx], target_qubit])
+
                                             if separate_depolarize_ancilla_gates:
                                                 full_circuit.append('TICK')
                                         error_to_add[2][err_idx] = False

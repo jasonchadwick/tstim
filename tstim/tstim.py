@@ -145,7 +145,7 @@ class TStimCircuit:
             current_ancilla_idx = self._bare_stim_circuit.num_qubits + ancilla_offset
             last_time_pos = -1
             instructions_to_add = self._added_instructions.copy()
-            unfinished_correlated_errors = [[min(instr.target_time_positions), [[], [], [], []], np.ones_like(instr.target_qubits, bool), copy.copy(instr), [-1, []]] for instr in self._correlated_errors]
+            unfinished_correlated_errors = [[min(instr.target_time_positions), [[], [], [], []], np.ones_like(instr.target_qubits, bool), copy.copy(instr), [-1, []], False] for instr in self._correlated_errors]
             unfinished_correlated_errors.sort(key=lambda x: x[0])
 
             available_ancillae = []
@@ -212,71 +212,77 @@ class TStimCircuit:
                                     num_error_strings_to_keep = min(4**num_qubits-1, math.ceil(-1/((1-0.5)**(1/math.comb(largest_num_samples, 2)) - 1)))
 
                                 if num_error_strings_to_keep > 0:
-                                    x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
-                                    num_err_strings = len(x_paulis)
+                                    # TODO: if 1q or 2q depolarize and all time
+                                    # positions are the same, we can just use a
+                                    # standard stim instruction instead.
+                                    if num_qubits <= 2 and len(np.unique(error_to_add[3].target_time_positions)) == 1:
+                                        error_to_add[5] = True
+                                    else:
+                                        x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
+                                        num_err_strings = len(x_paulis)
 
-                                    x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
-                                    z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
+                                        x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
+                                        z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
 
-                                    needed_x_ancillae = x_affected_indices.shape[0]
-                                    needed_z_ancillae = z_affected_indices.shape[0]
+                                        needed_x_ancillae = x_affected_indices.shape[0]
+                                        needed_z_ancillae = z_affected_indices.shape[0]
 
-                                    needed_ancillae = needed_x_ancillae + needed_z_ancillae
-                                    ancillae = available_ancillae[:needed_ancillae]
-                                    available_ancillae = available_ancillae[needed_ancillae:]
-                                    if len(ancillae) < needed_ancillae:
-                                        num_to_add = needed_ancillae - len(ancillae)
-                                        ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
-                                        current_ancilla_idx += num_to_add
+                                        needed_ancillae = needed_x_ancillae + needed_z_ancillae
+                                        ancillae = available_ancillae[:needed_ancillae]
+                                        available_ancillae = available_ancillae[needed_ancillae:]
+                                        if len(ancillae) < needed_ancillae:
+                                            num_to_add = needed_ancillae - len(ancillae)
+                                            ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
+                                            current_ancilla_idx += num_to_add
 
-                                    x_ancillae = ancillae[:needed_x_ancillae]
-                                    z_ancillae = ancillae[needed_x_ancillae:]
+                                        x_ancillae = ancillae[:needed_x_ancillae]
+                                        z_ancillae = ancillae[needed_x_ancillae:]
 
-                                    error_to_add[1][0] = x_ancillae
-                                    error_to_add[1][1] = z_ancillae
-                                    error_to_add[1][2] = x_affected_indices
-                                    error_to_add[1][3] = z_affected_indices
+                                        error_to_add[1][0] = x_ancillae
+                                        error_to_add[1][1] = z_ancillae
+                                        error_to_add[1][2] = x_affected_indices
+                                        error_to_add[1][3] = z_affected_indices
 
-                                    reset_layer_idx = len(full_circuit)
-                                    error_to_add[4][0] = reset_layer_idx
-                                    if len(error_to_add[3].annotation) > 0:
-                                        annotations[reset_layer_idx] = error_to_add[3].annotation
-                                    full_circuit.append('R', ancillae)
+                                        reset_layer_idx = len(full_circuit)
+                                        error_to_add[4][0] = reset_layer_idx
+                                        if len(error_to_add[3].annotation) > 0:
+                                            annotations[reset_layer_idx] = error_to_add[3].annotation
+                                        full_circuit.append('R', ancillae)
 
-                                    independent_prob = error_to_add[3].probability / num_err_strings
-                                    first_error = True
-                                    previous_prob_prod = 1
+                                        independent_prob = error_to_add[3].probability / num_err_strings
+                                        first_error = True
+                                        previous_prob_prod = 1
 
-                                    ancilla_used = np.zeros(needed_ancillae, dtype=bool)
+                                        ancilla_used = np.zeros(needed_ancillae, dtype=bool)
 
-                                    for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
-                                        x_targets = []
-                                        z_targets = []
-                                        x_idx = 0
-                                        z_idx = 0
-                                        for j in range(num_qubits):
-                                            if j in x_affected_indices:
-                                                if xp[j]:
-                                                    x_targets.append(stim.target_x(x_ancillae[x_idx]))
-                                                    ancilla_used[x_idx] = True
-                                                x_idx += 1
-                                            if j in z_affected_indices:
-                                                if zp[j]:
-                                                    z_targets.append(stim.target_x(z_ancillae[z_idx]))
-                                                    ancilla_used[needed_x_ancillae + z_idx] = True
-                                                z_idx += 1
+                                        for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
+                                            x_targets = []
+                                            z_targets = []
+                                            x_idx = 0
+                                            z_idx = 0
+                                            for j in range(num_qubits):
+                                                if j in x_affected_indices:
+                                                    if xp[j]:
+                                                        x_targets.append(stim.target_x(x_ancillae[x_idx]))
+                                                        ancilla_used[x_idx] = True
+                                                    x_idx += 1
+                                                if j in z_affected_indices:
+                                                    if zp[j]:
+                                                        z_targets.append(stim.target_x(z_ancillae[z_idx]))
+                                                        ancilla_used[needed_x_ancillae + z_idx] = True
+                                                    z_idx += 1
 
-                                        if first_error:
-                                            prob = independent_prob
-                                            full_circuit.append('CORRELATED_ERROR', x_targets + z_targets, prob)
-                                            first_error = False
-                                            previous_prob_prod *= (1-prob)
-                                        else:
-                                            prob = float(independent_prob / previous_prob_prod)
-                                            full_circuit.append('ELSE_CORRELATED_ERROR', x_targets + z_targets, prob)
-                                            previous_prob_prod *= (1-prob)
+                                            if first_error:
+                                                prob = independent_prob
+                                                full_circuit.append('CORRELATED_ERROR', x_targets + z_targets, prob)
+                                                first_error = False
+                                                previous_prob_prod *= (1-prob)
+                                            else:
+                                                prob = float(independent_prob / previous_prob_prod)
+                                                full_circuit.append('ELSE_CORRELATED_ERROR', x_targets + z_targets, prob)
+                                                previous_prob_prod *= (1-prob)
 
-                                    assert np.all(ancilla_used)
+                                        assert np.all(ancilla_used)
                                 else:
                                     # we don't need to keep any error strings
                                     error_to_add[2][:] = False
@@ -287,36 +293,27 @@ class TStimCircuit:
                                 x_affected_indices = error_to_add[1][2]
                                 z_affected_indices = error_to_add[1][3]
 
-
                             if not skip_op:
+                                if error_to_add[5]:
+                                    # 1 or 2 qubit depolarize at single time
+                                    time_pos = error_to_add[3].target_time_positions[0]
+                                    qubits = error_to_add[3].target_qubits
+                                    if len(qubits) == 1:
+                                        full_circuit.append('DEPOLARIZE1', qubits, error_to_add[3].probability)
+                                    else:
+                                        full_circuit.append('DEPOLARIZE2', qubits, error_to_add[3].probability)
+                                    error_to_add[2][:] = False
+
                                 for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                     if error_to_add[2][err_idx] and time_pos == instr.time_pos:
                                         if err_idx in x_affected_indices:
                                             ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
-
-                                            if separate_depolarize_ancilla_gates and full_circuit[-1].name != 'TICK':
-                                                full_circuit.append('TICK')
-
-                                            if error_to_add[4][0] in annotations:
-                                                # note this cx layer in annotation
-                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
                                             full_circuit.append('CX', [x_ancillae[ancilla_idx], target_qubit])
 
-                                            if separate_depolarize_ancilla_gates:
-                                                full_circuit.append('TICK')
                                         if err_idx in z_affected_indices:
                                             ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
-            
-                                            if separate_depolarize_ancilla_gates and full_circuit[-1].name != 'TICK':
-                                                full_circuit.append('TICK')
-
-                                            if error_to_add[4][0] in annotations:
-                                                # note this cz layer in annotation
-                                                annotations[error_to_add[4][0]] += f' {len(full_circuit)}'
                                             full_circuit.append('CZ', [z_ancillae[ancilla_idx], target_qubit])
 
-                                            if separate_depolarize_ancilla_gates:
-                                                full_circuit.append('TICK')
                                         error_to_add[2][err_idx] = False
 
                         # remove completed instructions

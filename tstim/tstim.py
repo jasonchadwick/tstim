@@ -354,7 +354,7 @@ class TStimCircuit:
                         annotations[len(full_circuit_str)] = annotation
                     full_circuit_str.append(str(instr))
 
-            assert len(unfinished_correlated_errors) == 0, 'Not all correlated errors were resolved. This means that there are correlated errors that refer to nonexistent TIME_POS indices.'
+            assert len(unfinished_correlated_errors) == 0, f'{len(unfinished_correlated_errors)} correlated errors were not resolved. This means that there are correlated errors that refer to nonexistent TIME_POS indices.'
 
             if len(annotations) > 0:
                 return stim.Circuit('\n'.join(full_circuit_str)), annotations

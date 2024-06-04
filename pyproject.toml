@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tstim"
-version = "0.1.0"
+version = "0.2.0"
 description = "Support for time-correlated errors in stim"
 authors = ["Jason Chadwick <jchadwick100@gmail.com>"]
 license = "GPLv3"

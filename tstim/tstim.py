@@ -140,7 +140,8 @@ class TStimCircuit:
             annotations, if any annotations are present.
         """
         if include_time_correlations:
-            full_circuit = stim.Circuit()
+            # full_circuit = stim.Circuit()
+            full_circuit_str = []
             annotations = {}
             current_ancilla_idx = self._bare_stim_circuit.num_qubits + ancilla_offset
             last_time_pos = -1
@@ -176,9 +177,11 @@ class TStimCircuit:
                                     current_ancilla_idx += 1
                                 error_to_add[1][0] = [ancilla]
 
-                                full_circuit.append('R', ancilla)
+                                # full_circuit.append('R', ancilla)
+                                full_circuit_str.append(f'R {ancilla}')
 
-                                full_circuit.append('X_ERROR', ancilla, error_to_add[3].probability)
+                                # full_circuit.append('X_ERROR', ancilla, error_to_add[3].probability)
+                                full_circuit_str.append(f'X_ERROR({error_to_add[3].probability}) {ancilla}')
                             else:
                                 assert len(ancillae) == 1
                                 ancilla = ancillae[0]
@@ -186,7 +189,9 @@ class TStimCircuit:
                             for err_idx, (pauli, target_qubit, time_pos) in enumerate(zip(error_to_add[3].pauli_string, error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                 if error_to_add[2][err_idx] and time_pos == instr.time_pos:
                                     if pauli != 'I':
-                                        full_circuit.append('C'+pauli, [ancilla, target_qubit])
+                                        # full_circuit.append('C'+pauli,
+                                        # [ancilla, target_qubit])
+                                        full_circuit_str.append(f'C{pauli} {ancilla} {target_qubit}')
                                     error_to_add[2][err_idx] = False
                         else:
                             assert isinstance(error_to_add[3], TimeDepolarize)
@@ -243,11 +248,12 @@ class TStimCircuit:
                                         error_to_add[1][2] = x_affected_indices
                                         error_to_add[1][3] = z_affected_indices
 
-                                        reset_layer_idx = len(full_circuit)
+                                        reset_layer_idx = len(full_circuit_str)
                                         error_to_add[4][0] = reset_layer_idx
                                         if len(error_to_add[3].annotation) > 0:
                                             annotations[reset_layer_idx] = error_to_add[3].annotation
-                                        full_circuit.append('R', ancillae)
+                                        # full_circuit.append('R', ancillae)
+                                        full_circuit_str.append(f'R {" ".join(map(str, ancillae))}')
 
                                         independent_prob = error_to_add[3].probability / num_err_strings
                                         first_error = True
@@ -263,23 +269,29 @@ class TStimCircuit:
                                             for j in range(num_qubits):
                                                 if j in x_affected_indices:
                                                     if xp[j]:
-                                                        x_targets.append(stim.target_x(x_ancillae[x_idx]))
+                                                        # x_targets.append(stim.target_x(x_ancillae[x_idx]))
+                                                        x_targets.append(f'X{x_ancillae[x_idx]}')
                                                         ancilla_used[x_idx] = True
                                                     x_idx += 1
                                                 if j in z_affected_indices:
                                                     if zp[j]:
-                                                        z_targets.append(stim.target_x(z_ancillae[z_idx]))
+                                                        # z_targets.append(stim.target_x(z_ancillae[z_idx]))
+                                                        z_targets.append(f'X{z_ancillae[z_idx]}')
                                                         ancilla_used[needed_x_ancillae + z_idx] = True
                                                     z_idx += 1
 
                                             if first_error:
                                                 prob = independent_prob
-                                                full_circuit.append('CORRELATED_ERROR', x_targets + z_targets, prob)
+                                                # full_circuit.append('CORRELATED_ERROR',
+                                                # x_targets + z_targets, prob)
+                                                full_circuit_str.append(f'E({prob}) {" ".join(x_targets + z_targets)}')
                                                 first_error = False
                                                 previous_prob_prod *= (1-prob)
                                             else:
                                                 prob = float(independent_prob / previous_prob_prod)
-                                                full_circuit.append('ELSE_CORRELATED_ERROR', x_targets + z_targets, prob)
+                                                # full_circuit.append('ELSE_CORRELATED_ERROR',
+                                                # x_targets + z_targets, prob)
+                                                full_circuit_str.append(f'ELSE_CORRELATED_ERROR({prob}) {" ".join(x_targets + z_targets)}')
                                                 previous_prob_prod *= (1-prob)
 
                                         assert np.all(ancilla_used)
@@ -299,20 +311,31 @@ class TStimCircuit:
                                     time_pos = error_to_add[3].target_time_positions[0]
                                     qubits = error_to_add[3].target_qubits
                                     if len(qubits) == 1:
-                                        full_circuit.append('DEPOLARIZE1', qubits, error_to_add[3].probability)
+                                        # full_circuit.append('DEPOLARIZE1',
+                                        # qubits, error_to_add[3].probability)
+                                        full_circuit_str.append(f'DEPOLARIZE1({error_to_add[3].probability}) {qubits[0]}')
                                     else:
-                                        full_circuit.append('DEPOLARIZE2', qubits, error_to_add[3].probability)
+                                        assert len(qubits) == 2
+                                        # full_circuit.append('DEPOLARIZE2',
+                                        # qubits, error_to_add[3].probability)
+                                        full_circuit_str.append(f'DEPOLARIZE2({error_to_add[3].probability}) {" ".join(map(str, qubits))}')
                                     error_to_add[2][:] = False
 
                                 for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add[3].target_qubits, error_to_add[3].target_time_positions)):
                                     if error_to_add[2][err_idx] and time_pos == instr.time_pos:
                                         if err_idx in x_affected_indices:
                                             ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
-                                            full_circuit.append('CX', [x_ancillae[ancilla_idx], target_qubit])
+                                            # full_circuit.append('CX',
+                                            # [x_ancillae[ancilla_idx],
+                                            # target_qubit])
+                                            full_circuit_str.append(f'CX {x_ancillae[ancilla_idx]} {target_qubit}')
 
                                         if err_idx in z_affected_indices:
                                             ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
-                                            full_circuit.append('CZ', [z_ancillae[ancilla_idx], target_qubit])
+                                            # full_circuit.append('CZ',
+                                            # [z_ancillae[ancilla_idx],
+                                            # target_qubit])
+                                            full_circuit_str.append(f'CZ {z_ancillae[ancilla_idx]} {target_qubit}')
 
                                         error_to_add[2][err_idx] = False
 
@@ -326,15 +349,18 @@ class TStimCircuit:
                         unfinished_correlated_errors.pop(inst_idx)
                 else:
                     if len(annotation) > 0:
-                        annotations[len(full_circuit)] = annotation
-                    full_circuit.append(instr)
+                        annotations[len(full_circuit_str)] = annotation
+                    # full_circuit.append(instr)
+                    full_circuit_str.append(str(instr))
 
             assert len(unfinished_correlated_errors) == 0, 'Not all correlated errors were resolved. This means that there are correlated errors that refer to nonexistent TIME_POS indices.'
 
             if len(annotations) > 0:
-                return full_circuit, annotations
+                # return full_circuit, annotations
+                return stim.Circuit('\n'.join(full_circuit_str)), annotations
             else:
-                return full_circuit
+                # return full_circuit
+                return stim.Circuit('\n'.join(full_circuit_str))
         else:
             full_circuit = stim.Circuit()
             annotations = {}

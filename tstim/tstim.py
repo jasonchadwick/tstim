@@ -164,7 +164,7 @@ class TStimCircuit:
                     [],
                     np.empty(0, int),
                     np.empty(0, int),
-                    np.zeros_like(instr.target_qubits, bool),
+                    np.ones_like(instr.target_qubits, bool),
                     False,
                 )
                 for instr in self._correlated_errors
@@ -206,10 +206,10 @@ class TStimCircuit:
                                 ancilla = ancillae[0]
 
                             for err_idx, (pauli, target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.pauli_string, error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
-                                if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
+                                if error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
                                     if pauli != 'I':
                                         full_circuit_str.append(f'C{pauli} {ancilla} {target_qubit}')
-                                    error_to_add.completed_target_qubits[err_idx] = True
+                                    error_to_add.completed_target_qubits[err_idx] = False
                         else:
                             assert isinstance(error_to_add.instruction, TimeDepolarize)
                             skip_op = False
@@ -309,7 +309,7 @@ class TStimCircuit:
                                         assert np.all(ancilla_used)
                                 else:
                                     # we don't need to keep any error strings
-                                    error_to_add.completed_target_qubits[:] = True
+                                    error_to_add.completed_target_qubits[:] = False
                                     skip_op = True
                             else:
                                 x_ancillae = error_to_add.x_ancillae
@@ -327,10 +327,10 @@ class TStimCircuit:
                                     else:
                                         assert len(qubits) == 2
                                         full_circuit_str.append(f'DEPOLARIZE2({error_to_add.instruction.probability}) {" ".join(map(str, qubits))}')
-                                    error_to_add.completed_target_qubits[:] = True
+                                    error_to_add.completed_target_qubits[:] = False
 
                                 for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
-                                    if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
+                                    if error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
                                         if err_idx in x_affected_indices:
                                             ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
                                             full_circuit_str.append(f'CX {x_ancillae[ancilla_idx]} {target_qubit}')
@@ -339,10 +339,10 @@ class TStimCircuit:
                                             ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
                                             full_circuit_str.append(f'CZ {z_ancillae[ancilla_idx]} {target_qubit}')
 
-                                        error_to_add.completed_target_qubits[err_idx] = True
+                                        error_to_add.completed_target_qubits[err_idx] = False
 
                         # remove completed instructions
-                        if np.all(error_to_add.completed_target_qubits):
+                        if np.all(~error_to_add.completed_target_qubits):
                             if reuse_ancillae:
                                 available_ancillae.extend(ancillae)
                                 assert len(available_ancillae) == len(set(available_ancillae))

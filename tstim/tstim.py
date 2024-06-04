@@ -169,6 +169,7 @@ class TStimCircuit:
                 )
                 for instr in self._correlated_errors
             ]
+            unfinished_correlated_errors.sort(key=lambda x: x.first_time_pos)
 
             available_ancillae = []
             for (instr, annotation) in instructions_to_add:

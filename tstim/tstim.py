@@ -248,8 +248,10 @@ class TStimCircuit:
         unfinished_correlated_errors.sort(key=lambda x: x.first_time_pos)
 
         allowed_collision_prob_per_error = 0
-        if allowed_collision_prob > 0:
+        if allowed_collision_prob > 0 and self._num_depolarize_errors > 0:
             allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
+        
+        num_error_strings_to_keep_dict = {}
 
         available_ancillae = []
         for (instr, annotation) in instructions_to_add:
@@ -318,10 +320,13 @@ class TStimCircuit:
                                 # strings that we need to keep to ensure that
                                 # the probability of any two error strings
                                 # being sampled is less than 0.5.
-                                num_error_strings_to_keep = 4**num_qubits-1
-                                if allowed_collision_prob_per_error > 0:
-                                    # binary search to find minimum number
-                                    num_error_strings_to_keep = binary_search_prob(num_times_to_be_sampled, 4**num_qubits-1, error_to_add.instruction.probability, allowed_collision_prob_per_error)
+                                if 4**num_qubits-1 not in num_error_strings_to_keep_dict:
+                                    num_error_strings_to_keep = 4**num_qubits-1
+                                    if allowed_collision_prob_per_error > 0:
+                                        # binary search to find minimum number
+                                        num_error_strings_to_keep = binary_search_prob(num_times_to_be_sampled, 4**num_qubits-1, error_to_add.instruction.probability, allowed_collision_prob_per_error)
+                                    num_error_strings_to_keep_dict[4**num_qubits-1] = num_error_strings_to_keep
+                                num_error_strings_to_keep = num_error_strings_to_keep_dict[4**num_qubits-1]
 
                                 if num_error_strings_to_keep > 0:
                                     # TODO: if 1q or 2q depolarize and all time

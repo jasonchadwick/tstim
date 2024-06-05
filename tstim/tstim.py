@@ -44,6 +44,72 @@ class UnfinishedCorrelatedError:
     completed_target_qubits: NDArray[np.bool_]
     is_simple_error: bool
 
+def collision_probability(n,k,p_tot):
+    """Calculate the probability of sampling the same item more than once in
+    n samples, given k equal-probability items and total probability of
+    sampling any one item.
+
+    Args:
+        n: Number of samples.
+        k: Number of items.
+        p_tot: Total probability of sampling any one item.
+
+    Returns:
+        Probability of sampling the same item more than once.
+    """
+    d = np.arange(n)
+    return 1-np.sum((1-1/k)**(d*(d-1)/2)*scipy.special.comb(n,d)*p_tot**d*(1-p_tot)**(n-d))
+
+def binary_search_prob(num_samples, num_errors, p_err_tot, p_collision_max):
+    """Binary search to find the minimum number of error strings to keep in a
+    depolarizing error to ensure that the probability of any two error strings
+    being sampled is less than p_collision_max, assuming num_samples samples.
+
+    Args:
+        num_samples: Number of samples to take.
+        num_errors: Number of error strings to consider.
+        p_err_tot: Total probability of sampling any one error string.
+        p_collision_max: Maximum probability of sampling the same error string
+            more than once.
+
+    Returns:
+        Minimum number of error strings to keep.
+    """
+    k_low = 1
+    k_high = num_errors
+    while k_low < k_high:
+        k_test = (k_low + k_high) // 2
+        p_test = collision_probability(num_samples, k_test, p_err_tot)
+        if p_test > p_collision_max:
+            k_low = k_test + 1
+        else:
+            k_high = k_test
+    return k_low
+
+def fast_search_prob(num_samples, num_errors, p_err_tot, p_collision_max):
+    """Search powers of 2 to find the minimum number of error strings to keep in
+    a depolarizing error to ensure that the probability of any two error strings
+    being sampled is less than p_collision_max, assuming num_samples samples.
+    
+    Args:
+        num_samples: Number of samples to take.
+        num_errors: Number of error strings to consider.
+        p_err_tot: Total probability of sampling any one error string.
+        p_collision_max: Maximum probability of sampling the same error string
+            more than once.
+    
+    Returns:
+        Minimum number of error strings to keep.
+    """
+    k_test = 1
+    p_test = collision_probability(num_samples, k_test, p_err_tot)
+    while p_test > p_collision_max:
+        k_test *= 2
+        if k_test >= num_errors:
+            return num_errors
+        p_test = collision_probability(num_samples, k_test, p_err_tot)
+    return k_test
+
 class TStimCircuit:
     """TODO
 
@@ -60,9 +126,10 @@ class TStimCircuit:
         if circuit_str:
             raise NotImplementedError
 
-        self._bare_stim_circuit_str = []
+        self._bare_stim_circuit_str: list[str] = []
         self._added_instructions: list[tuple[str | TimePos, str]] = []
         self._correlated_errors: list[TimeCorrelatedError | TimeDepolarize] = []
+        self._num_depolarize_errors: int = 0
 
     def append(self, instruction: str, annotation: str = '') -> None:
         """Append a Stim instruction (string) to the circuit. Instruction must
@@ -114,6 +181,7 @@ class TStimCircuit:
         num_err_strings = 4**len(target_qubits)
         no_identity_prob = probability * (num_err_strings - 1) / num_err_strings
         self._correlated_errors.append(TimeDepolarize(target_qubits, target_time_positions, no_identity_prob, annotation))
+        self._num_depolarize_errors += 1
 
     def append_time_pos(self, time_pos: int):
         """Append a TIME_POS instruction to the circuit.
@@ -128,7 +196,7 @@ class TStimCircuit:
             reuse_ancillae: bool = True, 
             ancilla_offset=0,
             num_times_to_be_sampled: int = 10**8,
-            reduction_eps: float = 0,
+            allowed_collision_prob: float = 0,
             approximate_independent_errors: bool = False,
         ) -> stim.Circuit | tuple[stim.Circuit, dict[int, str]]:
         """Converts to a stim.Circuit object, either with or without
@@ -140,16 +208,13 @@ class TStimCircuit:
             ancilla_offset: The offset to start numbering ancilla qubits from.
                 Useful when combining circuits, or for easier reading.
             num_times_to_be_sampled: The number of times the circuit will be
-                sampled. Used with reduction_eps to determine the number of
-                error strings to keep for each large correlated error.
-            reduction_eps: The percentile value to use for determining the
+                sampled. Used with allowed_collision_prob to determine the
                 number of error strings to keep for each large correlated error.
-                The number of error strings to keep is calculated as the
-                (1-reduction_eps) percentile value of the number of times we will
-                sample any non-identity error string. For this value, we then
-                find the number of error strings that we need to keep to ensure
-                that the probability of any two error strings being sampled is
-                less than 0.5.
+            allowed_collision_prob: The allowed chance that any single error
+                string within a depolarizing error will be sampled more than
+                once (which determines how much we can reduce the number of
+                error strings in each depolarizing error), assuming we take
+                num_times_to_be_sampled samples.
             approximate_independent_errors: Whether to approximate correlated
                 errors with independent errors. If True, spacetime-correlated
                 errors are instead applied as independent single-qubit,
@@ -181,6 +246,10 @@ class TStimCircuit:
             for instr in self._correlated_errors
         ]
         unfinished_correlated_errors.sort(key=lambda x: x.first_time_pos)
+
+        allowed_collision_prob_per_error = 0
+        if allowed_collision_prob > 0:
+            allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
 
         available_ancillae = []
         for (instr, annotation) in instructions_to_add:
@@ -225,6 +294,10 @@ class TStimCircuit:
                     else:
                         assert isinstance(error_to_add.instruction, TimeDepolarize)
                         if approximate_independent_errors:
+                            # re-weight probability because non-identity support
+                            # has different number of terms
+                            prob = error_to_add.instruction.probability * 4**num_qubits / (4**num_qubits - 1) * 3/4
+                            assert prob <= 3/4 and prob >= 0
                             for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
                                 if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
                                     full_circuit_str.append(f'DEPOLARIZE1({error_to_add.instruction.probability}) {target_qubit}')
@@ -245,11 +318,10 @@ class TStimCircuit:
                                 # strings that we need to keep to ensure that
                                 # the probability of any two error strings
                                 # being sampled is less than 0.5.
-                                largest_num_samples = int(scipy.stats.binom.ppf(1 - reduction_eps, num_times_to_be_sampled, error_to_add.instruction.probability))
-                                if largest_num_samples <= 1:
-                                    num_error_strings_to_keep = largest_num_samples
-                                else:
-                                    num_error_strings_to_keep = min(4**num_qubits-1, math.ceil(-1/((1-0.5)**(1/math.comb(largest_num_samples, 2)) - 1)))
+                                num_error_strings_to_keep = 4**num_qubits-1
+                                if allowed_collision_prob_per_error > 0:
+                                    # binary search to find minimum number
+                                    num_error_strings_to_keep = binary_search_prob(num_times_to_be_sampled, 4**num_qubits-1, error_to_add.instruction.probability, allowed_collision_prob_per_error)
 
                                 if num_error_strings_to_keep > 0:
                                     # TODO: if 1q or 2q depolarize and all time

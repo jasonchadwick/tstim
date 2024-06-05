@@ -302,7 +302,7 @@ class TStimCircuit:
                             assert prob <= 3/4 and prob >= 0
                             for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
                                 if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
-                                    full_circuit_str.append(f'DEPOLARIZE1({error_to_add.instruction.probability}) {target_qubit}')
+                                    full_circuit_str.append(f'DEPOLARIZE1({prob}) {target_qubit}')
                                     error_to_add.completed_target_qubits[err_idx] = True
                         else:
                             skip_op = False

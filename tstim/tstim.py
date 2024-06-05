@@ -344,64 +344,76 @@ class TStimCircuit:
                                         x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
                                         z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
 
-                                        needed_x_ancillae = x_affected_indices.shape[0]
-                                        needed_z_ancillae = z_affected_indices.shape[0]
+                                        # if all affected indices share
+                                        # the same time position, this is also a
+                                        # simple error - we can skip the
+                                        # ancillae and just apply the error.
+                                        total_affected_indices = np.unique(np.concatenate([x_affected_indices, z_affected_indices]))
+                                        affected_time_positions = np.unique(error_to_add.instruction.target_time_positions[total_affected_indices])
+                                        if len(total_affected_indices) <= 2 and len(np.unique(error_to_add.instruction.target_time_positions[total_affected_indices])) == 1:
+                                            error_to_add.is_simple_error = True
+                                            error_to_add.instruction.target_time_positions = [affected_time_positions[0]] * len(total_affected_indices)
+                                            error_to_add.instruction.target_qubits = [error_to_add.instruction.target_qubits[i] for i in total_affected_indices]
+                                            error_to_add.instruction.probability = error_to_add.instruction.probability * 4**num_qubits / (4**num_qubits - 1) * (4**len(total_affected_indices)-1)/(4**len(total_affected_indices))
+                                        else:
+                                            needed_x_ancillae = x_affected_indices.shape[0]
+                                            needed_z_ancillae = z_affected_indices.shape[0]
 
-                                        needed_ancillae = needed_x_ancillae + needed_z_ancillae
-                                        ancillae = available_ancillae[:needed_ancillae]
-                                        available_ancillae = available_ancillae[needed_ancillae:]
-                                        if len(ancillae) < needed_ancillae:
-                                            num_to_add = needed_ancillae - len(ancillae)
-                                            ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
-                                            current_ancilla_idx += num_to_add
+                                            needed_ancillae = needed_x_ancillae + needed_z_ancillae
+                                            ancillae = available_ancillae[:needed_ancillae]
+                                            available_ancillae = available_ancillae[needed_ancillae:]
+                                            if len(ancillae) < needed_ancillae:
+                                                num_to_add = needed_ancillae - len(ancillae)
+                                                ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
+                                                current_ancilla_idx += num_to_add
 
-                                        x_ancillae = ancillae[:needed_x_ancillae]
-                                        z_ancillae = ancillae[needed_x_ancillae:]
+                                            x_ancillae = ancillae[:needed_x_ancillae]
+                                            z_ancillae = ancillae[needed_x_ancillae:]
 
-                                        error_to_add.x_ancillae = x_ancillae
-                                        error_to_add.z_ancillae = z_ancillae
-                                        error_to_add.x_affected_indices = x_affected_indices
-                                        error_to_add.z_affected_indices = z_affected_indices
+                                            error_to_add.x_ancillae = x_ancillae
+                                            error_to_add.z_ancillae = z_ancillae
+                                            error_to_add.x_affected_indices = x_affected_indices
+                                            error_to_add.z_affected_indices = z_affected_indices
 
-                                        reset_layer_idx = len(full_circuit_str)
-                                        if len(error_to_add.instruction.annotation) > 0:
-                                            annotations[reset_layer_idx] = error_to_add.instruction.annotation
-                                        full_circuit_str.append(f'R {" ".join(map(str, ancillae))}')
+                                            reset_layer_idx = len(full_circuit_str)
+                                            if len(error_to_add.instruction.annotation) > 0:
+                                                annotations[reset_layer_idx] = error_to_add.instruction.annotation
+                                            full_circuit_str.append(f'R {" ".join(map(str, ancillae))}')
 
-                                        independent_prob = error_to_add.instruction.probability / num_err_strings
-                                        first_error = True
-                                        previous_prob_prod = 1
+                                            independent_prob = error_to_add.instruction.probability / num_err_strings
+                                            first_error = True
+                                            previous_prob_prod = 1
 
-                                        ancilla_used = np.zeros(needed_ancillae, dtype=bool)
+                                            ancilla_used = np.zeros(needed_ancillae, dtype=bool)
 
-                                        for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
-                                            x_targets = []
-                                            z_targets = []
-                                            x_idx = 0
-                                            z_idx = 0
-                                            for j in range(num_qubits):
-                                                if j in x_affected_indices:
-                                                    if xp[j]:
-                                                        x_targets.append(f'X{x_ancillae[x_idx]}')
-                                                        ancilla_used[x_idx] = True
-                                                    x_idx += 1
-                                                if j in z_affected_indices:
-                                                    if zp[j]:
-                                                        z_targets.append(f'X{z_ancillae[z_idx]}')
-                                                        ancilla_used[needed_x_ancillae + z_idx] = True
-                                                    z_idx += 1
+                                            for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
+                                                x_targets = []
+                                                z_targets = []
+                                                x_idx = 0
+                                                z_idx = 0
+                                                for j in range(num_qubits):
+                                                    if j in x_affected_indices:
+                                                        if xp[j]:
+                                                            x_targets.append(f'X{x_ancillae[x_idx]}')
+                                                            ancilla_used[x_idx] = True
+                                                        x_idx += 1
+                                                    if j in z_affected_indices:
+                                                        if zp[j]:
+                                                            z_targets.append(f'X{z_ancillae[z_idx]}')
+                                                            ancilla_used[needed_x_ancillae + z_idx] = True
+                                                        z_idx += 1
 
-                                            if first_error:
-                                                prob = independent_prob
-                                                full_circuit_str.append(f'E({prob}) {" ".join(x_targets + z_targets)}')
-                                                first_error = False
-                                                previous_prob_prod *= (1-prob)
-                                            else:
-                                                prob = float(independent_prob / previous_prob_prod)
-                                                full_circuit_str.append(f'ELSE_CORRELATED_ERROR({prob}) {" ".join(x_targets + z_targets)}')
-                                                previous_prob_prod *= (1-prob)
+                                                if first_error:
+                                                    prob = independent_prob
+                                                    full_circuit_str.append(f'E({prob}) {" ".join(x_targets + z_targets)}')
+                                                    first_error = False
+                                                    previous_prob_prod *= (1-prob)
+                                                else:
+                                                    prob = float(independent_prob / previous_prob_prod)
+                                                    full_circuit_str.append(f'ELSE_CORRELATED_ERROR({prob}) {" ".join(x_targets + z_targets)}')
+                                                    previous_prob_prod *= (1-prob)
 
-                                        assert np.all(ancilla_used)
+                                            assert np.all(ancilla_used)
                                 else:
                                     # we don't need to keep any error strings
                                     error_to_add.completed_target_qubits[:] = True

@@ -15,7 +15,7 @@ class TimeDepolarize:
     target_qubits: list[int]
     target_time_positions: list[int]
     probability: float
-    annotation: str
+    annotation: str = ''
 
 @dataclass
 class TimeCorrelatedError:
@@ -24,7 +24,7 @@ class TimeCorrelatedError:
     target_qubits: list[int]
     target_time_positions: list[int]
     probability: float
-    annotation: str
+    annotation: str = ''
 
 @dataclass 
 class TimePos:
@@ -37,12 +37,16 @@ class UnfinishedCorrelatedError:
     yet to an in-progress stim circuit during TStimCircuit.to_stim."""
     instruction: TimeCorrelatedError | TimeDepolarize
     first_time_pos: int
+    num_error_strings_to_keep: int
     x_ancillae: list[int]
     z_ancillae: list[int]
+    x_paulis: NDArray[np.bool_]
+    z_paulis: NDArray[np.bool_]
     x_affected_indices: NDArray[np.int_]
     z_affected_indices: NDArray[np.int_]
     completed_target_qubits: NDArray[np.bool_]
     is_simple_error: bool
+    has_been_initialized: bool
 
 def collision_probability(n,k,p_tot):
     """Calculate the probability of sampling the same item more than once in
@@ -191,6 +195,95 @@ class TStimCircuit:
         """
         self._added_instructions.append((TimePos(time_pos), ''))
 
+    def _presample_correlated_errors(
+            self,
+            correlated_errors: list[UnfinishedCorrelatedError],
+            num_times_to_be_sampled: int,
+            allowed_collision_prob_per_error: float,
+        ) -> list[UnfinishedCorrelatedError]:
+        """TODO"""
+        num_error_strings_to_keep_dict: dict[int, int] = {}
+        inst_indices_to_remove = []
+        inst_to_insert = []
+        for inst_idx, error_to_add in enumerate(correlated_errors):
+            if isinstance(error_to_add.instruction, TimeDepolarize):
+                num_qubits = len(error_to_add.instruction.target_qubits)
+
+                if 4**num_qubits-1 not in num_error_strings_to_keep_dict:
+                    num_error_strings_to_keep = 4**num_qubits-1
+                    if allowed_collision_prob_per_error > 0:
+                        # binary search to find minimum number
+                        num_error_strings_to_keep = binary_search_prob(num_times_to_be_sampled, 4**num_qubits-1, error_to_add.instruction.probability, allowed_collision_prob_per_error)
+                    num_error_strings_to_keep_dict[4**num_qubits-1] = num_error_strings_to_keep
+                num_error_strings_to_keep = num_error_strings_to_keep_dict[4**num_qubits-1]
+
+                error_to_add.num_error_strings_to_keep = num_error_strings_to_keep
+
+                x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
+                error_to_add.x_paulis = x_paulis
+                error_to_add.z_paulis = z_paulis
+
+                x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
+                z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
+                error_to_add.x_affected_indices = x_affected_indices
+                error_to_add.z_affected_indices = z_affected_indices
+
+                total_affected_indices = np.unique(np.concatenate([x_affected_indices, z_affected_indices]))
+
+                if num_error_strings_to_keep == 1:
+                    # If we are only adding a single
+                    # error string, it is easier to add
+                    # it as a TimeCorrelatedError rather
+                    # than a TimeDepolarize. It uses
+                    # fewer stim qubits and is easier to
+                    # visually parse in the circuit.
+                    pauli_string = ''
+                    for idx in total_affected_indices:
+                        if idx in x_affected_indices and idx in z_affected_indices:
+                            pauli_string += 'Y'
+                        elif idx in x_affected_indices:
+                            pauli_string += 'X'
+                        elif idx in z_affected_indices:
+                            pauli_string += 'Z'
+                        else:
+                            pauli_string += 'I'
+
+                    target_qubits = [error_to_add.instruction.target_qubits[i] for i in total_affected_indices]
+                    target_time_positions = [error_to_add.instruction.target_time_positions[i] for i in total_affected_indices]
+                    new_error = UnfinishedCorrelatedError(
+                        TimeCorrelatedError(
+                            pauli_string,
+                            target_qubits,
+                            target_time_positions,
+                            error_to_add.instruction.probability,
+                        ),
+                        min(target_time_positions),
+                        -1,
+                        [],
+                        [],
+                        np.empty(0, bool),
+                        np.empty(0, bool),
+                        np.empty(0, int),
+                        np.empty(0, int),
+                        np.zeros_like(target_qubits, bool),
+                        False,
+                        False,
+                    )
+                    inst_to_insert.append((inst_idx+1, new_error))
+                    inst_indices_to_remove.append(inst_idx)
+
+        # remove instructions
+        for inst_idx in reversed(inst_indices_to_remove):
+            correlated_errors.pop(inst_idx)
+            for i,(insert_idx, new_error) in enumerate(inst_to_insert):
+                if insert_idx > inst_idx:
+                    inst_to_insert[i] = (insert_idx-1, new_error)
+        # add instructions
+        for insert_idx, new_error in reversed(inst_to_insert):
+            correlated_errors = correlated_errors[:insert_idx] + [new_error] + correlated_errors[insert_idx:]
+
+        return correlated_errors
+
     def to_stim(
             self, 
             reuse_ancillae: bool = True, 
@@ -236,11 +329,15 @@ class TStimCircuit:
             UnfinishedCorrelatedError(
                 instr,
                 min(instr.target_time_positions),
+                4**len(instr.target_qubits)-1,
                 [],
                 [],
+                np.empty(0, bool),
+                np.empty(0, bool),
                 np.empty(0, int),
                 np.empty(0, int),
                 np.zeros_like(instr.target_qubits, bool),
+                False,
                 False,
             )
             for instr in self._correlated_errors
@@ -250,13 +347,12 @@ class TStimCircuit:
         allowed_collision_prob_per_error = 0
         if allowed_collision_prob > 0 and self._num_depolarize_errors > 0:
             allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
-        
-        num_error_strings_to_keep_dict = {}
+        unfinished_correlated_errors = self._presample_correlated_errors(unfinished_correlated_errors, num_times_to_be_sampled, allowed_collision_prob_per_error)
 
         available_ancillae = []
         for (instr, annotation) in instructions_to_add:
             if isinstance(instr, TimePos):
-                assert instr.time_pos > last_time_pos, f'Time positions must be in order, but got {last_time_pos} and {instr.time_pos}.'
+                assert instr.time_pos > last_time_pos, f'Time positions must be in order, but got {last_time_pos} before {instr.time_pos}.'
                 last_time_pos = instr.time_pos
 
                 # Apply correlated errors that occur at this time
@@ -265,34 +361,53 @@ class TStimCircuit:
                 for inst_idx, error_to_add in enumerate(unfinished_correlated_errors):
                     if error_to_add.first_time_pos > instr.time_pos:
                         # We have reached correlated errors that have not
-                        # started happening yet.
+                        # started happening yet (unfinished_correlated_errors is
+                        # sorted by first time position).
                         break
 
                     num_qubits = len(error_to_add.instruction.target_qubits)
 
                     if isinstance(error_to_add.instruction, TimeCorrelatedError):
-                        ancillae = error_to_add.x_ancillae
-                        if len(ancillae) == 0:
+                        if not error_to_add.has_been_initialized:
                             # first time seeing this instruction
-                            if available_ancillae:
-                                ancilla = available_ancillae.pop()
+                            num_time_positions = len(np.unique(error_to_add.instruction.target_time_positions))
+
+                            if num_time_positions == 1:
+                                # All time positions are the same (so we can
+                                # apply it as a single stim instruction, without 
+                                # using ancillae).
+                                error_to_add.is_simple_error = True
                             else:
-                                ancilla = current_ancilla_idx
-                                current_ancilla_idx += 1
-                            error_to_add.x_ancillae = [ancilla]
+                                if available_ancillae:
+                                    ancilla = available_ancillae.pop()
+                                else:
+                                    ancilla = current_ancilla_idx
+                                    current_ancilla_idx += 1
+                                error_to_add.x_ancillae = [ancilla]
 
-                            full_circuit_str.append(f'R {ancilla}')
+                                full_circuit_str.append(f'R {ancilla}')
 
-                            full_circuit_str.append(f'X_ERROR({error_to_add.instruction.probability}) {ancilla}')
+                                full_circuit_str.append(f'X_ERROR({error_to_add.instruction.probability}) {ancilla}')       
+                            error_to_add.has_been_initialized = True                     
+
+                        # Apply parts of the error that correspond to this time
+                        # position.
+                        if error_to_add.is_simple_error:
+                            time_pos = error_to_add.instruction.target_time_positions[0]
+                            if time_pos == instr.time_pos:
+                                err_str = f'E({error_to_add.instruction.probability})'
+                                for pauli, target_qubit in zip(error_to_add.instruction.pauli_string, error_to_add.instruction.target_qubits):
+                                    if pauli != 'I':
+                                        err_str += f' {pauli}{target_qubit}'
+                                full_circuit_str.append(err_str)
+                                error_to_add.completed_target_qubits[:] = True
                         else:
-                            assert len(ancillae) == 1
-                            ancilla = ancillae[0]
-
-                        for err_idx, (pauli, target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.pauli_string, error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
-                            if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
-                                if pauli != 'I':
-                                    full_circuit_str.append(f'C{pauli} {ancilla} {target_qubit}')
-                                error_to_add.completed_target_qubits[err_idx] = True
+                            ancilla = error_to_add.x_ancillae[0]
+                            for err_idx, (pauli, target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.pauli_string, error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
+                                if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
+                                    if pauli != 'I':
+                                        full_circuit_str.append(f'C{pauli} {ancilla} {target_qubit}')
+                                    error_to_add.completed_target_qubits[err_idx] = True
                     else:
                         assert isinstance(error_to_add.instruction, TimeDepolarize)
                         if approximate_independent_errors:
@@ -306,157 +421,131 @@ class TStimCircuit:
                                     error_to_add.completed_target_qubits[err_idx] = True
                         else:
                             skip_op = False
-                            ancillae = error_to_add.x_ancillae + error_to_add.z_ancillae
-                            if len(ancillae) == 0:
+                            if not error_to_add.has_been_initialized:
                                 # This is the first time seeing this
                                 # instruction, so we need to create ancillae and
                                 # apply the depolarizing errors.
-
-                                # First, we determine number of error terms to
-                                # keep. We calculate the (1-reduction_eps)
-                                # percentile value of the number of times we
-                                # will sample any non-identity error string. For
-                                # this value, we then find the number of error
-                                # strings that we need to keep to ensure that
-                                # the probability of any two error strings
-                                # being sampled is less than 0.5.
-                                if 4**num_qubits-1 not in num_error_strings_to_keep_dict:
-                                    num_error_strings_to_keep = 4**num_qubits-1
-                                    if allowed_collision_prob_per_error > 0:
-                                        # binary search to find minimum number
-                                        num_error_strings_to_keep = binary_search_prob(num_times_to_be_sampled, 4**num_qubits-1, error_to_add.instruction.probability, allowed_collision_prob_per_error)
-                                    num_error_strings_to_keep_dict[4**num_qubits-1] = num_error_strings_to_keep
-                                num_error_strings_to_keep = num_error_strings_to_keep_dict[4**num_qubits-1]
-
-                                if num_error_strings_to_keep > 0:
-                                    # TODO: if 1q or 2q depolarize and all time
-                                    # positions are the same, we can just use a
-                                    # standard stim instruction instead.
-                                    # TODO: we can also do this if
-                                    # x_affected_indices + z_affected_indices <=
-                                    # 2.
+                                if error_to_add.num_error_strings_to_keep > 0:
                                     if num_qubits <= 2 and len(np.unique(error_to_add.instruction.target_time_positions)) == 1:
                                         error_to_add.is_simple_error = True
                                     else:
-                                        x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
+                                        x_paulis = error_to_add.x_paulis
+                                        z_paulis = error_to_add.z_paulis
                                         num_err_strings = len(x_paulis)
 
-                                        x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
-                                        z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
+                                        x_affected_indices = error_to_add.x_affected_indices
+                                        z_affected_indices = error_to_add.z_affected_indices
 
-                                        # if all affected indices share
-                                        # the same time position, this is also a
-                                        # simple error - we can skip the
-                                        # ancillae and just apply the error.
-                                        total_affected_indices = np.unique(np.concatenate([x_affected_indices, z_affected_indices]))
-                                        affected_time_positions = np.unique(error_to_add.instruction.target_time_positions[total_affected_indices])
-                                        if len(total_affected_indices) <= 2 and len(np.unique(error_to_add.instruction.target_time_positions[total_affected_indices])) == 1:
-                                            error_to_add.is_simple_error = True
-                                            error_to_add.instruction.target_time_positions = [affected_time_positions[0]] * len(total_affected_indices)
-                                            error_to_add.instruction.target_qubits = [error_to_add.instruction.target_qubits[i] for i in total_affected_indices]
-                                            error_to_add.instruction.probability = error_to_add.instruction.probability * 4**num_qubits / (4**num_qubits - 1) * (4**len(total_affected_indices)-1)/(4**len(total_affected_indices))
-                                        else:
-                                            needed_x_ancillae = x_affected_indices.shape[0]
-                                            needed_z_ancillae = z_affected_indices.shape[0]
+                                        needed_x_ancillae = x_affected_indices.shape[0]
+                                        needed_z_ancillae = z_affected_indices.shape[0]
 
-                                            needed_ancillae = needed_x_ancillae + needed_z_ancillae
-                                            ancillae = available_ancillae[:needed_ancillae]
-                                            available_ancillae = available_ancillae[needed_ancillae:]
-                                            if len(ancillae) < needed_ancillae:
-                                                num_to_add = needed_ancillae - len(ancillae)
-                                                ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
-                                                current_ancilla_idx += num_to_add
+                                        needed_ancillae = needed_x_ancillae + needed_z_ancillae
+                                        ancillae = available_ancillae[:needed_ancillae]
+                                        available_ancillae = available_ancillae[needed_ancillae:]
+                                        if len(ancillae) < needed_ancillae:
+                                            num_to_add = needed_ancillae - len(ancillae)
+                                            ancillae += [current_ancilla_idx + i for i in range(num_to_add)]
+                                            current_ancilla_idx += num_to_add
 
-                                            x_ancillae = ancillae[:needed_x_ancillae]
-                                            z_ancillae = ancillae[needed_x_ancillae:]
+                                        x_ancillae = ancillae[:needed_x_ancillae]
+                                        z_ancillae = ancillae[needed_x_ancillae:]
 
-                                            error_to_add.x_ancillae = x_ancillae
-                                            error_to_add.z_ancillae = z_ancillae
-                                            error_to_add.x_affected_indices = x_affected_indices
-                                            error_to_add.z_affected_indices = z_affected_indices
+                                        error_to_add.x_ancillae = x_ancillae
+                                        error_to_add.z_ancillae = z_ancillae
+                                        error_to_add.x_affected_indices = x_affected_indices
+                                        error_to_add.z_affected_indices = z_affected_indices
 
-                                            reset_layer_idx = len(full_circuit_str)
-                                            if len(error_to_add.instruction.annotation) > 0:
-                                                annotations[reset_layer_idx] = error_to_add.instruction.annotation
-                                            full_circuit_str.append(f'R {" ".join(map(str, ancillae))}')
+                                        reset_layer_idx = len(full_circuit_str)
+                                        if len(error_to_add.instruction.annotation) > 0:
+                                            annotations[reset_layer_idx] = error_to_add.instruction.annotation
+                                        full_circuit_str.append(f'R {" ".join(map(str, ancillae))}')
 
-                                            independent_prob = error_to_add.instruction.probability / num_err_strings
-                                            first_error = True
-                                            previous_prob_prod = 1
+                                        independent_prob = error_to_add.instruction.probability / num_err_strings
+                                        first_error = True
+                                        previous_prob_prod = 1
 
-                                            ancilla_used = np.zeros(needed_ancillae, dtype=bool)
+                                        ancilla_used = np.zeros(needed_ancillae, dtype=bool)
 
-                                            for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
-                                                x_targets = []
-                                                z_targets = []
-                                                x_idx = 0
-                                                z_idx = 0
-                                                for j in range(num_qubits):
-                                                    if j in x_affected_indices:
-                                                        if xp[j]:
-                                                            x_targets.append(f'X{x_ancillae[x_idx]}')
-                                                            ancilla_used[x_idx] = True
-                                                        x_idx += 1
-                                                    if j in z_affected_indices:
-                                                        if zp[j]:
-                                                            z_targets.append(f'X{z_ancillae[z_idx]}')
-                                                            ancilla_used[needed_x_ancillae + z_idx] = True
-                                                        z_idx += 1
+                                        for i,(xp, zp) in enumerate(zip(x_paulis, z_paulis)):
+                                            x_targets = []
+                                            z_targets = []
+                                            x_idx = 0
+                                            z_idx = 0
+                                            for j in range(num_qubits):
+                                                if j in x_affected_indices:
+                                                    if xp[j]:
+                                                        x_targets.append(f'X{x_ancillae[x_idx]}')
+                                                        ancilla_used[x_idx] = True
+                                                    x_idx += 1
+                                                if j in z_affected_indices:
+                                                    if zp[j]:
+                                                        z_targets.append(f'X{z_ancillae[z_idx]}')
+                                                        ancilla_used[needed_x_ancillae + z_idx] = True
+                                                    z_idx += 1
 
-                                                if first_error:
-                                                    prob = independent_prob
-                                                    full_circuit_str.append(f'E({prob}) {" ".join(x_targets + z_targets)}')
-                                                    first_error = False
-                                                    previous_prob_prod *= (1-prob)
-                                                else:
-                                                    prob = float(independent_prob / previous_prob_prod)
-                                                    full_circuit_str.append(f'ELSE_CORRELATED_ERROR({prob}) {" ".join(x_targets + z_targets)}')
-                                                    previous_prob_prod *= (1-prob)
+                                            if first_error:
+                                                prob = independent_prob
+                                                full_circuit_str.append(f'E({prob}) {" ".join(x_targets + z_targets)}')
+                                                first_error = False
+                                                previous_prob_prod *= (1-prob)
+                                            else:
+                                                prob = float(independent_prob / previous_prob_prod)
+                                                full_circuit_str.append(f'ELSE_CORRELATED_ERROR({prob}) {" ".join(x_targets + z_targets)}')
+                                                previous_prob_prod *= (1-prob)
 
-                                            assert np.all(ancilla_used)
+                                        assert np.all(ancilla_used)
                                 else:
-                                    # we don't need to keep any error strings
-                                    error_to_add.completed_target_qubits[:] = True
+                                    # do not apply any errors this round
                                     skip_op = True
-                            else:
-                                x_ancillae = error_to_add.x_ancillae
-                                z_ancillae = error_to_add.z_ancillae
-                                x_affected_indices = error_to_add.x_affected_indices
-                                z_affected_indices = error_to_add.z_affected_indices
+                                    # mark for deletion
+                                    error_to_add.completed_target_qubits[:] = True
+
+                                error_to_add.has_been_initialized = True
 
                             if not skip_op:
+                                # If we are at the correct time location, apply
+                                # CX and CZ to propagate the correlated errors.
                                 if error_to_add.is_simple_error:
                                     # 1 or 2 qubit depolarize at single time
                                     time_pos = error_to_add.instruction.target_time_positions[0]
-                                    qubits = error_to_add.instruction.target_qubits
-                                    if len(qubits) == 1:
-                                        full_circuit_str.append(f'DEPOLARIZE1({error_to_add.instruction.probability}) {qubits[0]}')
-                                    else:
-                                        assert len(qubits) == 2
-                                        full_circuit_str.append(f'DEPOLARIZE2({error_to_add.instruction.probability}) {" ".join(map(str, qubits))}')
-                                    error_to_add.completed_target_qubits[:] = True
+                                    if time_pos == instr.time_pos:
+                                        qubits = error_to_add.instruction.target_qubits
+                                        if len(qubits) == 1:
+                                            full_circuit_str.append(f'DEPOLARIZE1({error_to_add.instruction.probability}) {qubits[0]}')
+                                        else:
+                                            assert len(qubits) == 2
+                                            full_circuit_str.append(f'DEPOLARIZE2({error_to_add.instruction.probability}) {" ".join(map(str, qubits))}')
+                                        error_to_add.completed_target_qubits[:] = True
+                                else:
+                                    x_ancillae = error_to_add.x_ancillae
+                                    z_ancillae = error_to_add.z_ancillae
+                                    x_affected_indices = error_to_add.x_affected_indices
+                                    z_affected_indices = error_to_add.z_affected_indices
+                                    for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
+                                        if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
+                                            if err_idx in x_affected_indices:
+                                                ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
+                                                full_circuit_str.append(f'CX {x_ancillae[ancilla_idx]} {target_qubit}')
 
-                                for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
-                                    if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
-                                        if err_idx in x_affected_indices:
-                                            ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
-                                            full_circuit_str.append(f'CX {x_ancillae[ancilla_idx]} {target_qubit}')
+                                            if err_idx in z_affected_indices:
+                                                ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
+                                                full_circuit_str.append(f'CZ {z_ancillae[ancilla_idx]} {target_qubit}')
 
-                                        if err_idx in z_affected_indices:
-                                            ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
-                                            full_circuit_str.append(f'CZ {z_ancillae[ancilla_idx]} {target_qubit}')
+                                            error_to_add.completed_target_qubits[err_idx] = True
 
-                                        error_to_add.completed_target_qubits[err_idx] = True
-
-                    # remove completed instructions
+                    # mark for deletion
                     if np.all(error_to_add.completed_target_qubits):
                         if reuse_ancillae:
+                            # reclaim ancillae
                             available_ancillae.extend(error_to_add.x_ancillae + error_to_add.z_ancillae)
                             assert len(available_ancillae) == len(set(available_ancillae))
                         inst_indices_to_remove.append(inst_idx)
+
+                # remove old instructions
                 for inst_idx in reversed(inst_indices_to_remove):
                     unfinished_correlated_errors.pop(inst_idx)
             else:
+                # instr is a regular stim instruction, so we just add it
                 if len(annotation) > 0:
                     annotations[len(full_circuit_str)] = annotation
                 full_circuit_str.append(str(instr))

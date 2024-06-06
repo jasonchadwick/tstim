@@ -564,7 +564,7 @@ def get_XZ_depolarize_ops(
         num_qubits: int, 
         max_error_strings: int = 4**10, 
         include_identity: bool = True,
-        rng: np.random.Generator,
+        rng: np.random.Generator | int | None = None,
     ) -> tuple[list[list[bool]], list[list[bool]]]:
     """Construct all n-qubit depolarizing operations, then decompose each into
     an X and Z component.
@@ -587,6 +587,11 @@ def get_XZ_depolarize_ops(
             depolarizing channel. Each string is of length num_qubits consisting
             of I and Z.
     """
+    if isinstance(rng, int):
+        rng = np.random.default_rng(rng)
+    elif rng is None:
+        rng = np.random.default_rng()
+
     if (include_identity and max_error_strings < 4**num_qubits) or (not include_identity and max_error_strings < 4**num_qubits-1):
         x_ops = [[False]*num_qubits for _ in range(max_error_strings)]
         z_ops = [[False]*num_qubits for _ in range(max_error_strings)]

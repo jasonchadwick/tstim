@@ -296,6 +296,7 @@ class TStimCircuit:
             num_times_to_be_sampled: int = 10**8,
             allowed_collision_prob: float = 0,
             approximate_independent_errors: bool = False,
+            approximate_independent_multiplier: float = 0.0,
             rng: np.random.Generator | int | None = None,
         ) -> stim.Circuit | tuple[stim.Circuit, dict[int, str]]:
         """Converts to a stim.Circuit object, either with or without
@@ -419,7 +420,10 @@ class TStimCircuit:
                         if approximate_independent_errors:
                             # re-weight probability because non-identity support
                             # has different number of terms
-                            prob = error_to_add.instruction.probability * 4**num_qubits / (4**num_qubits - 1) * 3/4
+                            if approximate_independent_multiplier == 0:
+                                prob = error_to_add.instruction.probability * 4**num_qubits / (4**num_qubits - 1) * 3/4
+                            else:
+                                prob = approximate_independent_multiplier * error_to_add.instruction.probability
                             assert prob <= 3/4 and prob >= 0
                             for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
                                 if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:

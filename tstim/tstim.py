@@ -7,6 +7,7 @@ import qc_utils.stim
 import itertools
 import scipy.stats
 import math
+import random
 
 @dataclass
 class TimeDepolarize:
@@ -200,9 +201,13 @@ class TStimCircuit:
             correlated_errors: list[UnfinishedCorrelatedError],
             num_times_to_be_sampled: int,
             allowed_collision_prob_per_error: float,
+            rng: np.random.Generator | int | None = None,
         ) -> list[UnfinishedCorrelatedError]:
         """TODO"""
-        rng = np.random.default_rng()
+        if isinstance(rng, int):
+            rng = np.random.default_rng(rng)
+        elif rng is None:
+            rng = np.random.default_rng()
         num_error_strings_to_keep_dict: dict[int, int] = {}
         inst_indices_to_remove = []
         inst_to_insert = []
@@ -277,16 +282,6 @@ class TStimCircuit:
             if not skip_instruction:
                 correlated_errors_new.append(error_to_add)
 
-        # # remove instructions
-        # for inst_idx in reversed(inst_indices_to_remove):
-        #     correlated_errors.pop(inst_idx)
-        #     for i,(insert_idx, new_error) in enumerate(inst_to_insert):
-        #         if insert_idx > inst_idx:
-        #             inst_to_insert[i] = (insert_idx-1, new_error)
-        # # add instructions
-        # for insert_idx, new_error in reversed(inst_to_insert):
-        #     correlated_errors = correlated_errors[:insert_idx] + [new_error] + correlated_errors[insert_idx:]
-
         correlated_errors_new.sort(key=lambda x: x.first_time_pos)
 
         return correlated_errors_new
@@ -298,6 +293,7 @@ class TStimCircuit:
             num_times_to_be_sampled: int = 10**8,
             allowed_collision_prob: float = 0,
             approximate_independent_errors: bool = False,
+            rng: np.random.Generator | int | None = None,
         ) -> stim.Circuit | tuple[stim.Circuit, dict[int, str]]:
         """Converts to a stim.Circuit object, either with or without
         time-correlated errors.
@@ -354,7 +350,7 @@ class TStimCircuit:
         allowed_collision_prob_per_error = 0
         if allowed_collision_prob > 0 and self._num_depolarize_errors > 0:
             allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
-        unfinished_correlated_errors = self._presample_correlated_errors(unfinished_correlated_errors, num_times_to_be_sampled, allowed_collision_prob_per_error)
+        unfinished_correlated_errors = self._presample_correlated_errors(unfinished_correlated_errors, num_times_to_be_sampled, allowed_collision_prob_per_error, rng)
 
         available_ancillae = []
         for (instr, annotation) in instructions_to_add:
@@ -568,7 +564,7 @@ def get_XZ_depolarize_ops(
         num_qubits: int, 
         max_error_strings: int = 4**10, 
         include_identity: bool = True,
-        rng: np.random.Generator | int | None = None,
+        rng: np.random.Generator,
     ) -> tuple[list[list[bool]], list[list[bool]]]:
     """Construct all n-qubit depolarizing operations, then decompose each into
     an X and Z component.
@@ -591,22 +587,23 @@ def get_XZ_depolarize_ops(
             depolarizing channel. Each string is of length num_qubits consisting
             of I and Z.
     """
-    if isinstance(rng, int):
-        rng = np.random.default_rng(rng)
-    elif rng is None:
-        rng = np.random.default_rng()
-
     if (include_identity and max_error_strings < 4**num_qubits) or (not include_identity and max_error_strings < 4**num_qubits-1):
-        # x_ops = np.zeros((max_error_strings, num_qubits), dtype=bool)
         x_ops = [[False]*num_qubits for _ in range(max_error_strings)]
-        # z_ops = np.zeros((max_error_strings, num_qubits), dtype=bool)
         z_ops = [[False]*num_qubits for _ in range(max_error_strings)]
 
         # Generate random Pauli strings (excluding the identity string)
         if include_identity:
-            chosen_indices = rng.choice(4**num_qubits, max_error_strings, replace=False)
+            if max_error_strings < 100:
+                # random.choices is faster for small k
+                chosen_indices = random.choices(range(1, 4**num_qubits), k=max_error_strings)
+            else:
+                chosen_indices = rng.choice(4**num_qubits, max_error_strings, replace=False)
         else:
-            chosen_indices = rng.choice(4**num_qubits-1, max_error_strings, replace=False)+1
+            if max_error_strings < 100:
+                # random.choices is faster for small k
+                chosen_indices = [1+x for x in random.choices(range(1, 4**num_qubits-1), k=max_error_strings)]
+            else:
+                chosen_indices = rng.choice(4**num_qubits-1, max_error_strings, replace=False)+1
 
         for i,idx in enumerate(chosen_indices):
             # Convert i to a Pauli string
@@ -623,8 +620,6 @@ def get_XZ_depolarize_ops(
     else:
         # Generate all possible Pauli strings
 
-        # x_ops = np.zeros((4**num_qubits, num_qubits), dtype=bool)
-        # z_ops = np.zeros((4**num_qubits, num_qubits), dtype=bool)
         x_ops = [[False]*num_qubits for _ in range(4**num_qubits)]
         z_ops = [[False]*num_qubits for _ in range(4**num_qubits)]
 

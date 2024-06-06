@@ -43,8 +43,8 @@ class UnfinishedCorrelatedError:
     z_ancillae: list[int]
     x_paulis: list[list[bool]]
     z_paulis: list[list[bool]]
-    x_affected_indices: NDArray[np.int_]
-    z_affected_indices: NDArray[np.int_]
+    x_affected_indices: list[int]
+    z_affected_indices: list[int]
     completed_target_qubits: list[bool]
     is_simple_error: bool
     has_been_initialized: bool
@@ -227,16 +227,19 @@ class TStimCircuit:
 
                 error_to_add.num_error_strings_to_keep = num_error_strings_to_keep
 
-                x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False, rng=rng)
+                x_paulis, z_paulis, x_affected_indices, z_affected_indices = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False, rng=rng)
                 error_to_add.x_paulis = x_paulis
                 error_to_add.z_paulis = z_paulis
 
-                x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
-                z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
+                # x_affected_indices = np.where(np.any(x_paulis, axis=0))[0]
+                # x_affected_indices = [i for i,paulis in enumerate(x_paulis) if len([p for p in paulis if p]) > 0]
+                # assert x_affected_indices == list(np.where(np.any(x_paulis, axis=1))[0])
+                # z_affected_indices = np.where(np.any(z_paulis, axis=0))[0]
+                # z_affected_indices = [i for i,paulis in enumerate(z_paulis) if len([p for p in paulis if p]) > 0]
                 error_to_add.x_affected_indices = x_affected_indices
                 error_to_add.z_affected_indices = z_affected_indices
 
-                total_affected_indices = list(set(np.concatenate([x_affected_indices, z_affected_indices])))
+                total_affected_indices = list(set(x_affected_indices + z_affected_indices))
 
                 if num_error_strings_to_keep == 1:
                     # If we are only adding a single
@@ -271,8 +274,8 @@ class TStimCircuit:
                         [],
                         [],
                         [],
-                        np.empty(0, int),
-                        np.empty(0, int),
+                        [],
+                        [],
                         [False]*len(target_qubits),
                         False,
                         False,
@@ -337,8 +340,8 @@ class TStimCircuit:
                 [],
                 [],
                 [],
-                np.empty(0, int),
-                np.empty(0, int),
+                [],
+                [],
                 [False]*len(instr.target_qubits),
                 False,
                 False,
@@ -439,8 +442,8 @@ class TStimCircuit:
                                         x_affected_indices = error_to_add.x_affected_indices
                                         z_affected_indices = error_to_add.z_affected_indices
 
-                                        needed_x_ancillae = x_affected_indices.shape[0]
-                                        needed_z_ancillae = z_affected_indices.shape[0]
+                                        needed_x_ancillae = len(x_affected_indices)
+                                        needed_z_ancillae = len(z_affected_indices)
 
                                         needed_ancillae = needed_x_ancillae + needed_z_ancillae
                                         ancillae = available_ancillae[:needed_ancillae]
@@ -527,11 +530,11 @@ class TStimCircuit:
                                     for err_idx, (target_qubit, time_pos) in enumerate(zip(error_to_add.instruction.target_qubits, error_to_add.instruction.target_time_positions)):
                                         if not error_to_add.completed_target_qubits[err_idx] and time_pos == instr.time_pos:
                                             if err_idx in x_affected_indices:
-                                                ancilla_idx = np.where(x_affected_indices == err_idx)[0][0]
+                                                ancilla_idx = x_affected_indices.index(err_idx)
                                                 full_circuit_str.append(f'CX {x_ancillae[ancilla_idx]} {target_qubit}')
 
                                             if err_idx in z_affected_indices:
-                                                ancilla_idx = np.where(z_affected_indices == err_idx)[0][0]
+                                                ancilla_idx = z_affected_indices.index(err_idx)
                                                 full_circuit_str.append(f'CZ {z_ancillae[ancilla_idx]} {target_qubit}')
 
                                             error_to_add.completed_target_qubits[err_idx] = True
@@ -565,7 +568,7 @@ def get_XZ_depolarize_ops(
         max_error_strings: int = 4**10, 
         include_identity: bool = True,
         rng: np.random.Generator | int | None = None,
-    ) -> tuple[list[list[bool]], list[list[bool]]]:
+    ) -> tuple[list[list[bool]], list[list[bool]], list[int], list[int]]:
     """Construct all n-qubit depolarizing operations, then decompose each into
     an X and Z component.
 
@@ -595,16 +598,18 @@ def get_XZ_depolarize_ops(
     if (include_identity and max_error_strings < 4**num_qubits) or (not include_identity and max_error_strings < 4**num_qubits-1):
         x_ops = [[False]*num_qubits for _ in range(max_error_strings)]
         z_ops = [[False]*num_qubits for _ in range(max_error_strings)]
+        x_affected_indices = set()
+        z_affected_indices = set()
 
         # Generate random Pauli strings (excluding the identity string)
         if include_identity:
-            if max_error_strings < 100:
+            if max_error_strings <= 10:
                 # random.choices is faster for small k
                 chosen_indices = random.choices(range(1, 4**num_qubits), k=max_error_strings)
             else:
                 chosen_indices = rng.choice(4**num_qubits, max_error_strings, replace=False)
         else:
-            if max_error_strings < 100:
+            if max_error_strings <= 10:
                 # random.choices is faster for small k
                 chosen_indices = [1+x for x in random.choices(range(1, 4**num_qubits-1), k=max_error_strings)]
             else:
@@ -617,14 +622,17 @@ def get_XZ_depolarize_ops(
             for j,digit in enumerate(quaternary_str):
                 if digit == '1':
                     x_ops[i][j] = True
+                    x_affected_indices.add(j)
                 elif digit == '2':
                     x_ops[i][j] = True
+                    x_affected_indices.add(j)
                     z_ops[i][j] = True
+                    z_affected_indices.add(j)
                 elif digit == '3':
                     z_ops[i][j] = True
+                    z_affected_indices.add(j)
     else:
         # Generate all possible Pauli strings
-
         x_ops = [[False]*num_qubits for _ in range(4**num_qubits)]
         z_ops = [[False]*num_qubits for _ in range(4**num_qubits)]
 
@@ -642,7 +650,10 @@ def get_XZ_depolarize_ops(
             x_ops = x_ops[1:]
             z_ops = z_ops[1:]
 
+        x_affected_indices = range(num_qubits)
+        z_affected_indices = range(num_qubits)
+
     assert len(x_ops) == len(z_ops)
     assert len(x_ops) == min(max_error_strings, 4**num_qubits-1 if not include_identity else 4**num_qubits)
 
-    return x_ops, z_ops
+    return x_ops, z_ops, list(x_affected_indices), list(z_affected_indices)

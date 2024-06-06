@@ -202,10 +202,13 @@ class TStimCircuit:
             allowed_collision_prob_per_error: float,
         ) -> list[UnfinishedCorrelatedError]:
         """TODO"""
+        rng = np.random.default_rng()
         num_error_strings_to_keep_dict: dict[int, int] = {}
         inst_indices_to_remove = []
         inst_to_insert = []
+        correlated_errors_new = []
         for inst_idx, error_to_add in enumerate(correlated_errors):
+            skip_instruction = False
             if isinstance(error_to_add.instruction, TimeDepolarize):
                 num_qubits = len(error_to_add.instruction.target_qubits)
 
@@ -219,7 +222,7 @@ class TStimCircuit:
 
                 error_to_add.num_error_strings_to_keep = num_error_strings_to_keep
 
-                x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False)
+                x_paulis, z_paulis = get_XZ_depolarize_ops(num_qubits, max_error_strings=num_error_strings_to_keep, include_identity=False, rng=rng)
                 error_to_add.x_paulis = x_paulis
                 error_to_add.z_paulis = z_paulis
 
@@ -269,21 +272,24 @@ class TStimCircuit:
                         False,
                         False,
                     )
-                    inst_to_insert.append((inst_idx+1, new_error))
-                    inst_indices_to_remove.append(inst_idx)
+                    skip_instruction = True
+                    correlated_errors_new.append(new_error)
+            if not skip_instruction:
+                correlated_errors_new.append(error_to_add)
 
-        # remove instructions
-        for inst_idx in reversed(inst_indices_to_remove):
-            correlated_errors.pop(inst_idx)
-            for i,(insert_idx, new_error) in enumerate(inst_to_insert):
-                if insert_idx > inst_idx:
-                    inst_to_insert[i] = (insert_idx-1, new_error)
-        # add instructions
-        for insert_idx, new_error in reversed(inst_to_insert):
-            correlated_errors = correlated_errors[:insert_idx] + [new_error] + correlated_errors[insert_idx:]
+        # # remove instructions
+        # for inst_idx in reversed(inst_indices_to_remove):
+        #     correlated_errors.pop(inst_idx)
+        #     for i,(insert_idx, new_error) in enumerate(inst_to_insert):
+        #         if insert_idx > inst_idx:
+        #             inst_to_insert[i] = (insert_idx-1, new_error)
+        # # add instructions
+        # for insert_idx, new_error in reversed(inst_to_insert):
+        #     correlated_errors = correlated_errors[:insert_idx] + [new_error] + correlated_errors[insert_idx:]
 
-        correlated_errors.sort(key=lambda x: x.first_time_pos)
-        return correlated_errors
+        # correlated_errors.sort(key=lambda x: x.first_time_pos)
+
+        return correlated_errors_new
 
     def to_stim(
             self, 

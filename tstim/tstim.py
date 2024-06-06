@@ -282,6 +282,7 @@ class TStimCircuit:
         for insert_idx, new_error in reversed(inst_to_insert):
             correlated_errors = correlated_errors[:insert_idx] + [new_error] + correlated_errors[insert_idx:]
 
+        correlated_errors.sort(key=lambda x: x.first_time_pos)
         return correlated_errors
 
     def to_stim(

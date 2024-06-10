@@ -62,6 +62,11 @@ def collision_probability(n,k,p_tot):
     Returns:
         Probability of sampling the same item more than once.
     """
+    assert n >= 1
+    assert k >= 1
+    assert p_tot >= 0
+    assert p_tot <= 1
+    assert n >= k
     d = np.arange(n)
     return 1-np.sum((1-1/k)**(d*(d-1)/2)*scipy.special.comb(n,d)*p_tot**d*(1-p_tot)**(n-d))
 
@@ -78,8 +83,14 @@ def binary_search_prob(num_samples, num_errors, p_err_tot, p_collision_max):
             more than once.
 
     Returns:
-        Minimum number of error strings to keep.
+        Minimum number of error strings to keep. Will be between 0 and
+        num_errors. Only returns 0 if p_err_tot is 0.
     """
+    if np.isclose(p_err_tot, 1):
+        return num_errors
+    elif np.isclose(p_err_tot, 0):
+        return 0
+
     k_low = 1
     k_high = num_errors
     while k_low < k_high:
@@ -216,6 +227,7 @@ class TStimCircuit:
             skip_instruction = False
             if isinstance(error_to_add.instruction, TimeDepolarize):
                 num_qubits = len(error_to_add.instruction.target_qubits)
+                assert num_qubits > 0
 
                 if 4**num_qubits-1 not in num_error_strings_to_keep_dict:
                     num_error_strings_to_keep = 4**num_qubits-1
@@ -241,6 +253,8 @@ class TStimCircuit:
 
                 total_affected_indices = list(set(x_affected_indices + z_affected_indices))
 
+                if num_error_strings_to_keep == 0:
+                    skip_instruction = True
                 if num_error_strings_to_keep == 1:
                     # If we are only adding a single
                     # error string, it is easier to add

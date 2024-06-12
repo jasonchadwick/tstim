@@ -367,7 +367,9 @@ class TStimCircuit:
         allowed_collision_prob_per_error = 0
         if allowed_collision_prob > 0 and self._num_depolarize_errors > 0:
             allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
-        unfinished_correlated_errors = self._presample_correlated_errors(unfinished_correlated_errors, num_times_to_be_sampled, allowed_collision_prob_per_error, rng)
+
+        if not approximate_independent_errors:
+            unfinished_correlated_errors = self._presample_correlated_errors(unfinished_correlated_errors, num_times_to_be_sampled, allowed_collision_prob_per_error, rng)
 
         available_ancillae = []
         for (instr, annotation) in instructions_to_add:

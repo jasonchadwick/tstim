@@ -66,7 +66,6 @@ def collision_probability(n,k,p_tot):
     assert k >= 1
     assert p_tot >= 0
     assert p_tot <= 1
-    assert n >= k
     d = np.arange(n)
     return 1-np.sum((1-1/k)**(d*(d-1)/2)*scipy.special.comb(n,d)*p_tot**d*(1-p_tot)**(n-d))
 

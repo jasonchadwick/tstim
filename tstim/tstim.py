@@ -364,11 +364,10 @@ class TStimCircuit:
         ]
         unfinished_correlated_errors.sort(key=lambda x: x.first_time_pos)
 
-        allowed_collision_prob_per_error = 0
-        if allowed_collision_prob > 0 and self._num_depolarize_errors > 0:
-            allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
-
         if not approximate_independent_errors:
+            allowed_collision_prob_per_error = 0
+            if allowed_collision_prob > 0 and self._num_depolarize_errors > 0:
+                allowed_collision_prob_per_error = 1 - (1-allowed_collision_prob)**(1/self._num_depolarize_errors)
             unfinished_correlated_errors = self._presample_correlated_errors(unfinished_correlated_errors, num_times_to_be_sampled, allowed_collision_prob_per_error, rng)
 
         available_ancillae = []
